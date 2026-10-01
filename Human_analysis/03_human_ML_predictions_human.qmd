@@ -1,0 +1,373 @@
+---
+title: "ICE Annina 10x sequencing analysis - ML predictions of human data"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  metacell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
+  dea_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results"
+  glmnet_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/glmnet_human_output"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  n_times: 20
+  n_leftout_patients: 5
+  min_gene_count: 10
+  min_fraction_metacells_expressing: 0.05
+  top_n_genes_for_expression_plots: 6
+---
+
+::: callout-note
+In this script we are building glmnet model using gene expression as covariate to model patient's age
+
+**What this script does:** loads the human metacell-level `SingleCellExperiment`
+objects and DEA tables produced by `01_human_Processing.qmd`/
+`02_human_Analysis_metacell_Level.qmd`, then for each cell type (IN, EN) trains an
+lasso (glmnet, gaussian family) model that predicts chronological Age from
+metacell gene expression. Two evaluation strategies are used: (1) a standard 80/20
+train/test split repeated across `n_times` random seeds, on all patients pooled
+together, and (2) a leave-several-patients-out scheme repeated across `n_times`
+random samples of held-out patients, to test how well the model generalizes to
+patients it never saw during training. For each strategy, predicted-vs-true-age
+plots, CV error plots, and gene coefficient tables/stability plots are produced and
+saved, to be compared later against the organoid-derived model.
+
+* We apply 2 strategies. 1) Perform train/test split with all patient together and 2) Leave one patient out, train model on all other patients and test on left-out patient. The latter is to test generalizability of the model.
+
+* For strategy #2 we perform model training/testing several times (according to param n_times) where the patients are randomly sampled.
+
+* Gene selection for model is performed by taking genes present in at least 5% of metacells and with more than 10 counts 
+:::
+
+# Setup
+
+```{r setup, tags=c(), warning=FALSE, message=FALSE}
+options(future.globals.maxSize = 8000 * 1024^2)
+suppressMessages({
+  library(scater)
+  library(dplyr)
+  library(caret)
+  library(purrr)
+  library(parallel)
+  library(ggpubr)
+  library(ggplot2)
+  library(stringr)
+  library(magrittr)
+  library(glmnet)
+  library(knitr)
+  library(DT)
+})
+source(params$helper_functions_path)
+dir.create(params$glmnet_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+set.seed(1)
+n_times = params$n_times
+```
+
+# Load data and params
+
+```{r load_data_human}
+# -----#
+# IN
+# -----#
+metacell_sce_IN = readRDS(file.path(params$metacell_dir, "metacell_sce_IN_human.RDS"))
+metadata_metacell_sce_IN = colData(metacell_sce_IN)
+DEA_metacell_sce_IN = read.csv(file.path(params$dea_dir, "DEA_metacell_iN_old_vs_young.csv"), row.names = 1)
+
+# -----#
+# EN
+# -----#
+metacell_sce_EN = readRDS(file.path(params$metacell_dir, "metacell_sce_EN_human.RDS"))
+metadata_metacell_sce_EN = colData(metacell_sce_EN)
+DEA_metacell_sce_EN = read.csv(file.path(params$dea_dir, "DEA_metacell_exN_old_vs_young.csv"), row.names = 1)
+```
+
+# Helper functions
+
+Both modelling strategies (all-patients 80/20 split, and leave-patients-out) are run
+identically for IN and EN. 
+
+```{r ml-helper-functions, warning=FALSE, message=FALSE}
+#' Keep genes expressed in at least min_fraction_metacells of metacells
+#' Rationale: reduces noise/feature count before feeding into glmnet
+filter_genes_min_expression = function(sce, min_count = params$min_gene_count,
+                                        min_fraction_metacells = params$min_fraction_metacells_expressing) {
+  keep = rowSums(counts(sce) >= min_count) >= (min_fraction_metacells * ncol(sce))
+  sce[keep, ]
+}
+
+#' Predicted vs. true age scatter + regression line + R^2
+#' color_by: optional column name in df to map to point color
+plot_pred_vs_age = function(df, color_by = NULL, title = "Predicted vs chronological Age per cell") {
+  if (is.null(color_by)) {
+    p = ggplot(df, aes(x = chronological_age, y = pred)) +
+      geom_point(color = "skyblue") +
+      geom_smooth(method = "lm", color = "black", linetype = "dashed") +
+      stat_regline_equation(aes(label = ..rr.label..), color = "black", show.legend = FALSE)
+  } else {
+    p = ggplot(df, aes(x = chronological_age, y = pred, color = .data[[color_by]])) +
+      geom_point(size = 0.75) +
+      geom_smooth(method = "lm", linetype = "dashed") + # one line per group (color inherited)
+      stat_regline_equation(aes(label = ..rr.label..), show.legend = FALSE) # one R^2 per group, stacked automatically by ggpubr
+  }
+  p +
+    labs(y = "Predicted Age", x = "True Age") +
+    ggtitle(title) +
+    theme_bw()
+}
+
+#' CV MSE across training seeds, with the mean test-set MSE.
+plot_cv_mse_across_seeds = function(model_params_list, n_times, title = "MSE of CV") {
+  df = lapply(model_params_list, function(x) x[c("lambda.min", "MSE_cv", "MSE_cv_sd", "seed", "MSE_test")]) %>%
+    do.call(rbind.data.frame, .)
+
+  summary_row = data.frame(
+    lambda.min = mean(df$lambda.min),
+    MSE_cv = mean(df$MSE_test),
+    MSE_cv_sd = sd(df$MSE_test),
+    seed = "test_data_acrossSeeds"
+  )
+  df = rbind(df %>% select(!MSE_test), summary_row)
+  df$seed = factor(df$seed, levels = c(as.character(seq_len(n_times)), "test_data_acrossSeeds"))
+
+  ggplot(df, aes(x = seed, y = MSE_cv, color = lambda.min)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = MSE_cv - MSE_cv_sd, ymax = MSE_cv + MSE_cv_sd)) +
+    ggtitle(title)
+}
+
+#' Strategy 1: train/test split with all patients pooled, repeated across n_times seeds
+run_glmnet_allpatients = function(sce, n_times, label, output_dir) {
+
+  sce = filter_genes_min_expression(sce)
+  logcounts_df = as.data.frame(t(logcounts(sce)))
+  logcounts_df$label = sce$Age
+  meta = colData(sce)
+
+  lst_predictions = train_glmnet_model(df = logcounts_df, model_family = "gaussian",
+                                        metadata = meta, n_times = n_times)
+
+  # Predicted vs true age
+  df_pred = lapply(lst_predictions$lst, function(x) x$predictions[c("pred", "chronological_age")]) %>%
+    do.call(rbind.data.frame, .)
+  print(plot_pred_vs_age(df_pred))
+
+  # CV error across seeds
+  print(plot_cv_mse_across_seeds(lapply(lst_predictions$lst, `[[`, "model_params"), n_times))
+
+  # MSE across lambdas (regularization path)
+  plot(lst_predictions$cvfit)
+  title(main = "lambda regularization vs MSE", line = 2.5)
+
+  # Coefficients
+  coefs = lapply(lst_predictions$lst, function(x) x$coeffs$gene_imp) %>%
+    do.call(cbind.data.frame, .)
+  colnames(coefs) = names(lst_predictions$lst)
+  coefs = coefs[rowMeans(coefs) != 0, ] %>% mutate(mean = rowMeans(.))
+  coefs = coefs[-1, ] %>% round(2)  # remove intercept
+
+  print(datatable(coefs))
+  write.table(coefs, file.path(output_dir, paste0("coefs_glmnet_human_", label, "_allPatientsTogether.txt")))
+
+  # Predicted vs true age, colored by covariate
+  df_pred_cov = lapply(lst_predictions$lst, function(x) {
+    x$predictions[c("pred", "chronological_age", "sex", "diagnosis", "sample_source")]
+  }) %>% do.call(rbind.data.frame, .)
+
+  print(plot_pred_vs_age(df_pred_cov, color_by = "sex"))
+  print(plot_pred_vs_age(df_pred_cov, color_by = "diagnosis"))
+  print(plot_pred_vs_age(df_pred_cov, color_by = "sample_source"))
+
+  invisible(list(coefs = coefs, predictions = lst_predictions))
+}
+
+#' Strategy 2: leave n_leftout patients out, train on the rest, predict the held-out
+#' patients, repeated across n_times random samples of held-out patients
+run_glmnet_leaveout = function(sce_full, n_times, n_leftout, label, output_dir,
+                                DEA_table, top_n_genes) {
+
+  lst_predictions_leftOutpatients = list()
+
+  for (seed in seq_len(n_times)) {
+    set.seed(seed)
+    leftout_patient = sample(unique(sce_full$Individual_ID), n_leftout)
+    rest_of_patients = setdiff(unique(sce_full$Individual_ID), leftout_patient)
+
+    sce_train = sce_full[, sce_full$Individual_ID %in% rest_of_patients]
+    sce_train = filter_genes_min_expression(sce_train)
+
+    # Internal cross validation determines lambda and then we predict on the held-out patients.
+    data = as.data.frame(t(logcounts(sce_train)))
+    data$label = sce_train$Age
+
+    out = train_glmnet_model(df = data, model_family = "gaussian", n_times = 1, test = FALSE)
+
+    sce_test = sce_full[, sce_full$Individual_ID %in% leftout_patient]
+    gene_cols = setdiff(colnames(data), "label")
+    test_data = as.data.frame(t(logcounts(sce_test)[gene_cols, ]))
+    test_label = sce_test$Age
+
+    preds = predict(out$cvfit, newx = as.matrix(test_data), s = "lambda.min", type = "response")
+
+    index_lambda = out$cvfit$index["min", ]
+    seed_key = paste0("seed_", seed)
+    lst_predictions_leftOutpatients[[seed_key]] = list(
+      model_params = list(
+        lambda.min = out$cvfit$lambda.min,
+        MSE_cv = out$cvfit$cvm[index_lambda],
+        MSE_cv_sd = out$cvfit$cvsd[index_lambda],
+        seed = seed,
+        MSE_test = ModelMetrics::mse(test_label, preds[, 1])
+      ),
+      coeffs = list(
+        gene_imp = coef(out$cvfit) %>% as.matrix() %>% as.data.frame() %>% round(3) %>%
+          mutate(gene = rownames(.))
+      ),
+      predictions = data.frame(
+        pred = preds[, 1],
+        chronological_age = test_label,
+        seed = seed_key,
+        leftOut_patient = leftout_patient,
+        diagnosis = sce_test$Diagnosis,
+        Sample_Source = sce_test$Sample_Source,
+        sex = sce_test$Sex
+      )
+    )
+  }
+
+  # Predicted vs true age
+  df_pred = lapply(lst_predictions_leftOutpatients, function(x) {
+    x$predictions[c("pred", "chronological_age", "diagnosis", "Sample_Source", "sex")]
+  }) %>% do.call(rbind.data.frame, .)
+
+  print(plot_pred_vs_age(df_pred))
+  print(plot_pred_vs_age(df_pred, color_by = "sex"))
+  print(plot_pred_vs_age(df_pred, color_by = "diagnosis"))
+  print(plot_pred_vs_age(df_pred, color_by = "Sample_Source"))
+
+  # CV error across seeds
+  print(plot_cv_mse_across_seeds(
+    lapply(lst_predictions_leftOutpatients, `[[`, "model_params"), n_times
+  ))
+
+  # Coefficients: full_join across seeds since gene sets can differ between seeds
+  coefs = lapply(lst_predictions_leftOutpatients, function(x) x$coeffs$gene_imp)
+  coefs = Reduce(function(x, y) full_join(x, y, by = "gene"), coefs)
+  genenames = coefs$gene
+  coefs = coefs %>% select(!gene)
+  coefs[is.na(coefs)] = 0
+  rownames(coefs) = genenames
+  colnames(coefs) = names(lst_predictions_leftOutpatients)
+  coefs = coefs[rowMeans(coefs) != 0, ] %>% mutate(mean = rowMeans(.))
+  coefs = coefs[-1, ] %>% round(2)  # remove intercept
+
+  write.table(coefs, file.path(output_dir, paste0("coefs_glmnet_human_", label, "_leftOutPatients.txt")))
+
+  # Feature stability across seeds: how often + how strongly each gene was selected
+  coef_df = coefs %>% select(-mean)
+  summary_df = data.frame(
+    gene = rownames(coef_df),
+    selection_freq = rowSums(coef_df != 0),
+    mean_coef = rowMeans(coef_df),
+    sd_coef = apply(coef_df, 1, sd)
+  ) %>%
+    filter(selection_freq >= 10) %>%
+    arrange(desc(selection_freq), desc(abs(mean_coef))) %>%
+    slice_head(n = 50)
+
+  print(
+    ggplot(summary_df, aes(x = reorder(gene, mean_coef), y = mean_coef)) +
+      geom_errorbar(aes(ymin = mean_coef - sd_coef, ymax = mean_coef + sd_coef),
+                    width = 0.2, color = "gray60", alpha = 0.7) +
+      geom_point(color = "gray20", size = 2.5) +
+      coord_flip() +
+      theme_minimal() +
+      labs(
+        title = paste0("Feature Stability across ", n_times, " Seeds"),
+        subtitle = "Top genes ranked by Selection Frequency and Coefficient",
+        x = "Gene", y = "Average Coefficient"
+      )
+  )
+
+  # Expression of top up/down genes across Age, by a few covariates
+  genes = c(
+    coefs %>% arrange(mean) %>% slice(1:top_n_genes) %>% rownames(),
+    coefs %>% arrange(desc(mean)) %>% slice(1:top_n_genes) %>% rownames()
+  )
+
+  print(
+    plotExpression(sce_full, features = genes, x = "Age", ncol = 4, colour_by = "Sample_Source") +
+      geom_smooth(method = "lm")
+  )
+  print(datatable(DEA_table[genes, ] %>% select(-gene) %>% round(4)))
+
+  print(
+    plotExpression(sce_full, features = genes, x = "Age", ncol = 4, colour_by = "Sex") +
+      geom_smooth(method = "lm")
+  )
+  print(
+    plotExpression(sce_full, features = genes, x = "Age", ncol = 4, colour_by = "Diagnosis") +
+      geom_smooth(method = "lm")
+  )
+
+  invisible(list(coefs = coefs, predictions = lst_predictions_leftOutpatients))
+}
+```
+
+# Modelling all patients together
+
+::: panel-tabset
+## IN
+
+```{r modelling_allpatientsTogether_IN, warning=FALSE, message=FALSE, fig.height=10, fig.width=10}
+result_allpatients_IN = run_glmnet_allpatients(
+  sce = metacell_sce_IN, n_times = n_times, label = "IN", output_dir = params$glmnet_output_dir
+)
+```
+
+## EN
+
+```{r modelling_allpatientsTogether_EN, warning=FALSE, message=FALSE, fig.height=10, fig.width=10}
+result_allpatients_EN = run_glmnet_allpatients(
+  sce = metacell_sce_EN, n_times = n_times, label = "EN", output_dir = params$glmnet_output_dir
+)
+```
+:::
+
+# Generalizability to new patients
+
+::: panel-tabset
+
+## IN
+
+```{r modelling_sampleLevel_IN_generalizability, warning=FALSE, message=FALSE, fig.width=10, fig.height=10}
+result_leaveout_IN = run_glmnet_leaveout(
+  sce_full = metacell_sce_IN, n_times = n_times, n_leftout = params$n_leftout_patients,
+  label = "IN", output_dir = params$glmnet_output_dir,
+  DEA_table = DEA_metacell_sce_IN, top_n_genes = params$top_n_genes_for_expression_plots
+)
+```
+
+## EN
+
+```{r modelling_sampleLevel_EN_generalizability, warning=FALSE, message=FALSE, fig.width=8, fig.height=10}
+result_leaveout_EN = run_glmnet_leaveout(
+  sce_full = metacell_sce_EN, n_times = n_times, n_leftout = params$n_leftout_patients,
+  label = "Excitatory_Neurons", output_dir = params$glmnet_output_dir,
+  DEA_table = DEA_metacell_sce_EN, top_n_genes = params$top_n_genes_for_expression_plots
+)
+```
+:::
+
+# sessioninfo
+
+```{r}
+sessionInfo()
+```

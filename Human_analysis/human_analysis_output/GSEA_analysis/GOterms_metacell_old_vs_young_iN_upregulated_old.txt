@@ -1,0 +1,6 @@
+go cluster parent score size term parentTerm termUniqueness termUniquenessWithinCluster termDispensability
+GO:0048732 2 GO:0048732 1.84590672430757 443 gland development gland development 0.8508 1 0
+GO:0045600 1 GO:0045600 1.84590672430757 71 positive regulation of fat cell differentiation positive regulation of fat cell differentiation 0.5712 0.383666666666667 0
+GO:0045598 1 GO:0045600 1.7842272332172 146 regulation of fat cell differentiation positive regulation of fat cell differentiation 0.5576 0.366666666666667 0.948
+GO:0045444 1 GO:0045600 1.51090076392609 248 fat cell differentiation positive regulation of fat cell differentiation 0.5742 0.382333333333333 0.901
+GO:0019228 3 GO:0019228 1.4174224760919 33 neuronal action potential neuronal action potential 0.9726 1 0

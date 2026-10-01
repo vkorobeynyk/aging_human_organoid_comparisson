@@ -1,0 +1,28 @@
+hsapiens_BP_ID Description p.adjust
+GO:0007249 canonical NF-kappaB signal transduction 0.00149814754788
+GO:1902533 positive regulation of intracellular signal transduction 0.00203360619755906
+GO:0023056 positive regulation of signaling 0.00229120878602791
+GO:0009967 positive regulation of signal transduction 0.00269244472463236
+GO:0043122 regulation of canonical NF-kappaB signal transduction 0.00310862085285305
+GO:0048584 positive regulation of response to stimulus 0.00319439010700769
+GO:0010647 positive regulation of cell communication 0.00337178128731534
+GO:0141124 intracellular signaling cassette 0.00745209207848093
+GO:0030198 extracellular matrix organization 0.0117517562776043
+GO:0043062 extracellular structure organization 0.0117517562776043
+GO:0045229 external encapsulating structure organization 0.0117517562776043
+GO:0009611 response to wounding 0.0143364220151311
+GO:0051239 regulation of multicellular organismal process 0.015123488265206
+GO:0043123 positive regulation of canonical NF-kappaB signal transduction 0.0162076529026202
+GO:0042060 wound healing 0.0169264817517089
+GO:0001816 cytokine production 0.0169264817517089
+GO:0009636 response to toxic substance 0.0179782662498385
+GO:0070374 positive regulation of ERK1 and ERK2 cascade 0.0194456396399659
+GO:0001817 regulation of cytokine production 0.0194456396399659
+GO:0051240 positive regulation of multicellular organismal process 0.0227391965449915
+GO:0032103 positive regulation of response to external stimulus 0.0229862386220978
+GO:0032101 regulation of response to external stimulus 0.0253580594141508
+GO:0006952 defense response 0.0310197493863915
+GO:1903053 regulation of extracellular matrix organization 0.0323919561173112
+GO:0050878 regulation of body fluid levels 0.0323919561173112
+GO:0009617 response to bacterium 0.0449884638352291
+GO:0050727 regulation of inflammatory response 0.0466162642028825

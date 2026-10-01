@@ -1,0 +1,875 @@
+---
+title: "ICE Annina 10x sequencing analysis - generate metacells for DEA/GSEA"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  object_storage_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
+  gsea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/GSEA_results/metacells"
+  dea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  amount_of_cells_to_aggregate: 15
+  n_metacells_generate: 20
+  gsea_n_pathways: 150
+  dea_padj_threshold: 0.05
+---
+
+::: callout-note
+**What this script does:** loads the integrated/annotated organoid Seurat object from
+`01_organoid_QC_processing_integration.qmd`, generates metacells (bootstrapped
+pseudobulk profiles) per celltype for each dataset grouping (COp1 10w, COp1 4m, COp2
+4dpi+4wpi pooled, and COp2 4dpi/4wpi separately for IN/EN), runs ICE-vs-wt DESeq2 DEA
+and GSEA (GO Biological Process) on each, and saves the resulting metacell objects
+and DEA/GSEA tables for use in later scripts (organoid single-cell analysis, and the
+human/organoid ML prediction scripts). It also runs a few "all datasets combined" DEA
+and GSEA analyses to look at the ICE-vs-wt signature across the whole organoid cohort.
+:::
+
+# libraries
+
+```{r libs, warning=FALSE, message=FALSE}
+options(scipen = 1, digits = 3) 
+set.seed(1)
+
+suppressMessages({
+  library(dplyr)
+  library(Seurat)
+  library(edgeR)
+  library(harmony)
+  library(stringr)
+  library(stringi)
+  library(genekitr)
+  library(ggplot2)
+  library(geneset)
+  library(scater)
+  library(magrittr)
+  library(SingleCellExperiment)
+  library(DT)
+  library(EnhancedVolcano)
+  library(cluster)
+  library(DESeq2)
+  library(pheatmap)
+  library(rrvgo)
+  library(tidyr)
+  library(openxlsx)
+  library(ggpubr)
+  library(patchwork)
+})
+
+# Load local pipeline utilities
+source(params$qc_pipeline_functions_path)
+source(params$helper_functions_path)
+
+# Output directory path configurations
+object_storage_path = params$object_storage_path
+gsea_results_path = params$gsea_results_path
+DEA_results_path = params$dea_results_path
+
+dir.create(DEA_results_path, recursive = TRUE, showWarnings = FALSE)
+dir.create(gsea_results_path, recursive = TRUE, showWarnings = FALSE)
+
+gs = geneset::getGO(org = "human", ont = "bp")
+```
+
+# Load object
+
+```{r load object, warning=FALSE, message=FALSE}
+harmonized_seurat = readRDS(file.path(object_storage_path , "SO_integratedHarmony_alldatasetsTogether_organoids.RDS"))
+harmonized_seurat_COp1_10w = subset(harmonized_seurat, Protocol_maturation_stage == "COp1_10w")
+harmonized_seurat_COp1_4m = subset(harmonized_seurat, Protocol_maturation_stage == "COp1_4m")
+harmonized_seurat_COp2_4dpi_4wpi = subset(harmonized_seurat, Protocol == "COp2")
+```
+
+# Helper functions for this script
+
+```{r metacell-helper-functions, warning=FALSE, message=FALSE}
+#' Generate metacells + per-celltype DESeq2 DEA (ICE vs wt) for a Seurat subset
+#' @param SO Seurat object already subset to the dataset/timepoint grouping of interest
+#' @param celltypes character vector of Celltype values to loop over
+#' @return named list (by celltype) of list(sce = , markers = , DESeq2_lst = )
+generate_metacells_dea_per_celltype = function(SO, celltypes, amount_of_cells_to_aggregate, n_metacells_generate) {
+  lapply(celltypes, function(ct) {
+    sce = create_metacells(
+      SO = subset(SO, Celltype == ct),
+      amountOfCells_toAggregate = amount_of_cells_to_aggregate,
+      N_metacells_generate = n_metacells_generate
+    )
+    sce$phenotype = as.factor(sce$phenotype)
+
+    DESeq2_lst = metacell_DESeq2_DEA(
+      sce = sce, phenotype_column = "phenotype", dataset_column = "dataset",
+      design_formula = as.formula("~ phenotype"), title_corHeatmap = paste0("metacell correlation ", ct),
+      contrast = c("phenotype", "ICE", "wt"), organism = "organoid"
+    )
+
+    markers = DESeq2_lst$markers %>% na.omit()
+    list(sce = sce, markers = markers, DESeq2_lst = DESeq2_lst)
+  }) %>% setNames(celltypes)
+}
+
+#' Run GSEA on each celltype's DEA markers, and summarize the (relative) number of
+#' significant GO terms found per celltype
+#' @return list(out = per-celltype GSEA results, goterm_summary = data.frame for plotting)
+summarize_gsea_per_celltype = function(metacell_list, gs, n_pathways) {
+  out = lapply(metacell_list, function(x) {
+    sign_markers = x$markers %>% filter(padj < params$dea_padj_threshold)
+    gsea = gsea_analysis(markers = x$markers, cluster = "trending clusters", gs = gs,
+                          n_pathways = n_pathways, plot_type = "none")
+    list(sign_markers = sign_markers, n_sign_markers = nrow(sign_markers), gsea = gsea)
+  })
+
+  goterm_summary = lapply(out, function(x) {
+    if (is.list(x$gsea)) nrow(x$gsea$gsea_df)
+  }) %>%
+    Filter(Negate(is.null), .) %>%
+    as.data.frame() %>%
+    t() %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("celltype") %>%
+    dplyr::rename(n = V1) %>%
+    mutate(relative_n = n / sum(n))
+
+  list(out = out, goterm_summary = goterm_summary)
+}
+
+#' Show PCA/MA diagnostics for a metacell DESeq2 result, save the markers table, and
+#' plot expression of the top genes by padj across phenotype
+plot_dea_tab = function(DESeq2_lst, output_csv_path, n_top_genes = 4) {
+  print(DESeq2_lst$plt_phenotype)
+  print(DESeq2_lst$plt_dataset)
+
+  markers = DESeq2_lst$markers %>% na.omit()
+  write.csv(markers, output_csv_path)
+
+  DESeq2::plotMA(DESeq2_lst$res)
+  with(markers %>% filter(padj < params$dea_padj_threshold) %>% head(10), {
+    text(baseMean, avg_log2FC, labels = gene, pos = 3, cex = 1)
+    segments(baseMean, avg_log2FC, baseMean, avg_log2FC, col = "gray60")
+  })
+
+  # After a VST transformation, values are on a scale where variance is stabilized and no
+  # longer mean-dependent, so they're comparable across genes regardless of original variance.
+  vst = DESeq2_lst$vst_transformed_deseq2
+  dds = DESeq2_lst$dds
+  expr = assay(vst)
+
+  genes = markers %>% arrange(padj) %>% dplyr::slice(1:n_top_genes) %>% pull(gene)
+
+  df = expr[genes, , drop = FALSE] %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("gene") %>%
+    pivot_longer(-gene, names_to = "sample", values_to = "expression") %>%
+    left_join(as.data.frame(colData(dds)) %>% tibble::rownames_to_column("sample"), by = "sample")
+
+  print(
+    ggplot(df, aes(x = phenotype, y = expression)) +
+      geom_boxplot() +
+      geom_jitter(width = 0.2, size = 1.5, alpha = 0.6) +
+      facet_wrap(~ gene, scales = "free_y") +
+      labs(y = "VST normalized expression")
+  )
+
+  markers
+}
+
+#' Run GSEA on a saved DEA markers CSV, write up/down GO term tables, plot the reduced-GO treemap
+run_gsea_tab = function(markers_csv_path, gs, n_pathways, up_txt_path, down_txt_path, title_label) {
+  markers = read.csv(markers_csv_path, row.names = 1)
+  gsea = gsea_analysis(markers = markers, cluster = "trending clusters", gs = gs,
+                        n_pathways = n_pathways, plot_type = "none")
+
+  write.table(gsea$gsea_df %>% filter(NES > 0) %>% select(hsapiens_BP_ID, p.adjust),
+              up_txt_path, row.names = FALSE, quote = FALSE)
+  write.table(gsea$gsea_df %>% filter(NES < 0) %>% select(hsapiens_BP_ID, p.adjust),
+              down_txt_path, row.names = FALSE, quote = FALSE)
+
+  plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = title_label)
+}
+
+#' Generate metacells + DEA for a single celltype restricted to one Protocol timepoint
+#' (used for the COp2 4dpi/4wpi IN/EN objects later for ML prediction).
+generate_metacell_by_timepoint = function(SO, celltypes, timepoint, amount_of_cells_to_aggregate,
+                                           n_metacells_generate, dea_csv_prefix) {
+  lapply(celltypes, function(ct) {
+    cells_keep = colnames(SO)[SO$Celltype == ct & SO$timepoint == timepoint]
+
+    sce = create_metacells(
+      SO = subset(SO, cells = cells_keep),
+      amountOfCells_toAggregate = amount_of_cells_to_aggregate,
+      N_metacells_generate = n_metacells_generate
+    )
+    sce$phenotype = as.factor(sce$phenotype)
+
+    DESeq2_lst = metacell_DESeq2_DEA(
+      sce = sce, phenotype_column = "phenotype", dataset_column = "dataset",
+      design_formula = as.formula("~ phenotype"), contrast = c("phenotype", "ICE", "wt"),
+      organism = "organoid"
+    )
+
+    markers = DESeq2_lst$markers %>% na.omit()
+    write.csv(markers, paste0(dea_csv_prefix, "_", ct, "_COp2_", timepoint, "_organoids.csv"))
+
+    list(sce = sce, sampleCor_heatmap = DESeq2_lst$heatmap)
+  }) %>% setNames(celltypes)
+}
+
+#' Restrict a list of SingleCellExperiments to their shared genes and cbind them together
+merge_sces_common_genes = function(sce_list) {
+  common_genes = Reduce(intersect, lapply(sce_list, rownames))
+  message("Number of shared genes across ", length(sce_list), " objects: ", length(common_genes))
+  subsetted = lapply(sce_list, function(sce) sce[common_genes, ])
+  do.call(cbind, subsetted)
+}
+
+#' Generate metacells for one celltype, pooling all datasets with a 4dpi/4wpi timepoint
+#' annotation together (regardless of protocol/maturation stage)
+generate_metacell_celltype_timepointComparison = function(SO, celltype, amount_of_cells_to_aggregate, n_metacells_generate) {
+  cells_keep = colnames(SO)[SO$Celltype == celltype & SO$timepoint %in% c("4dpi", "4wpi")]
+  sce = create_metacells(
+    SO = subset(SO, cells = cells_keep),
+    amountOfCells_toAggregate = amount_of_cells_to_aggregate,
+    N_metacells_generate = n_metacells_generate
+  )
+  sce$phenotype = as.factor(sce$phenotype)
+  sce$timepoint = factor(sce$timepoint, levels = c("4dpi", "4wpi")) # 4dpi = reference
+  sce
+}
+
+#' ICE vs wt effect specifically at one timepoint (Wald). Positive avg_log2FC = higher in ICE.
+get_phenotype_effect_at_timepoint = function(sce, reference_timepoint, design_formula) {
+  sce$timepoint = relevel(as.factor(sce$timepoint), ref = reference_timepoint)
+  dds = DESeqDataSetFromMatrix(counts(sce), colData = colData(sce), design = design_formula)
+  dds = DESeq(dds)
+  results(dds, contrast = c("phenotype", "ICE", "wt")) %>%
+    as.data.frame() %>%
+    dplyr::rename("avg_log2FC" = "log2FoldChange") %>%
+    mutate(gene = rownames(.))
+}
+
+#' LRT: does the phenotype (ICE vs wt) effect differ by timepoint (4dpi vs 4wpi)?
+run_timepoint_phenotype_interaction_dea = function(sce, design_full, design_reduced) {
+  dds_full = DESeqDataSetFromMatrix(counts(sce), colData = colData(sce), design = design_full)
+  dds_full = DESeq(dds_full, test = "LRT", reduced = design_reduced)
+
+  # NOTE: for a multi-coefficient LRT, avg_log2FC does not reflect a clean "higher in X vs Y" direction - only padj
+  # from this table should be interpreted (does the phenotype effect differ by
+  # timepoint).
+  markers = results(dds_full) %>%
+    as.data.frame() %>%
+    dplyr::rename("avg_log2FC" = "log2FoldChange") %>%
+    mutate(gene = rownames(.)) %>%
+    filter(!is.na(padj))
+
+  list(dds = dds_full, markers = markers)
+}
+```
+
+# Generate metacells + DEA | COp1 10w | per Celltype
+
+::: callout-tip
+Why Metacells?
+Single-cell RNA-seq data is notoriously sparse and prone to high dropout rates. Aggregating transcriptomic profiles into metacells allows us to perform more sensitive, un-biased pseudobulk DEA testing while preserving sample-level replicate fidelity.
+:::
+
+```{r ,warning=FALSE, message=FALSE, results = 'hide'}
+#| fig-width: 12
+#| fig-height: 10
+
+celltypes = unique(harmonized_seurat_COp1_10w$Celltype)
+
+sce_metacells_alldatasets_perCT_10w = generate_metacells_dea_per_celltype(
+  harmonized_seurat_COp1_10w, celltypes, params$amount_of_cells_to_aggregate, params$n_metacells_generate
+)
+
+saveRDS(sce_metacells_alldatasets_perCT_10w , file.path(object_storage_path , "metacell_sce_allCelltypes_COp1_10w.RDS"))
+
+markers = sce_metacells_alldatasets_perCT_10w$exN$markers
+EnhancedVolcano(markers,
+              lab = rownames(markers),
+              x = 'avg_log2FC',
+              y = 'padj',
+              title = paste0('Metacell COp1_10w ICE vs wt - ', "exN"),
+              pCutoff = 0.05,
+              FCcutoff = 1,
+              pointSize = 3.0,
+              labSize = 6.0,
+              drawConnectors = TRUE)
+```
+
+```{r ,warning=FALSE, message=FALSE, results = 'hide'}
+#| fig-width: 12
+#| fig-height: 10
+
+sce_metacells_alldatasets_perCT_10w$exN$DESeq2_lst$heatmap
+```
+
+# GSEA per celltype | 10w
+```{r GSEA_perCelltype_metacells_alldatasets_COp1_10w,warning=FALSE, message=FALSE, results = 'hide', fig.height=12, fig.width=12}
+gsea_10w = summarize_gsea_per_celltype(sce_metacells_alldatasets_perCT_10w, gs, params$gsea_n_pathways)
+
+n_GOterms = list()
+n_GOterms[["COp1_10w"]] = gsea_10w$goterm_summary
+```
+
+# Generate metacells + DEA | COp1 4m | per Celltype
+
+```{r ,warning=FALSE, message=FALSE, results = 'hide'}
+#| fig-width: 12
+#| fig-height: 10
+
+celltypes = unique(harmonized_seurat_COp1_4m$Celltype)
+
+sce_metacells_alldatasets_perCT_4m = generate_metacells_dea_per_celltype(
+  harmonized_seurat_COp1_4m, celltypes, params$amount_of_cells_to_aggregate, params$n_metacells_generate
+)
+
+saveRDS(sce_metacells_alldatasets_perCT_4m , file.path(object_storage_path , "metacell_sce_allCelltypes_COp1_4m.RDS"))
+
+markers = sce_metacells_alldatasets_perCT_4m$exN$markers
+EnhancedVolcano(markers,
+              lab = rownames(markers),
+              x = 'avg_log2FC',
+              y = 'padj',
+              title = paste0('Metacell COp1_4m ICE vs wt - ', "exN"),
+              pCutoff = 0.05,
+              FCcutoff = 1,
+              pointSize = 3.0,
+              labSize = 6.0,
+              drawConnectors = TRUE)
+```
+
+```{r ,warning=FALSE, message=FALSE, results = 'hide'}
+#| fig-width: 12
+#| fig-height: 10
+
+sce_metacells_alldatasets_perCT_4m$exN$DESeq2_lst$heatmap
+```
+
+# GSEA per celltype | COp1 4m
+```{r GSEA_perCelltype_metacells_alldatasets_4m,warning=FALSE, message=FALSE, results = 'hide', fig.height=12, fig.width=12}
+gsea_4m = summarize_gsea_per_celltype(sce_metacells_alldatasets_perCT_4m, gs, params$gsea_n_pathways)
+
+n_GOterms[["COp1_4m"]] = gsea_4m$goterm_summary
+```
+
+# Generate metacells + DEA | COp2 | per Celltype
+
+```{r ,warning=FALSE, message=FALSE, results = 'hide'}
+#| fig-width: 12
+#| fig-height: 10
+
+celltypes = unique(harmonized_seurat_COp2_4dpi_4wpi$Celltype)
+
+sce_metacells_alldatasets_perCT_COp2 = generate_metacells_dea_per_celltype(
+  harmonized_seurat_COp2_4dpi_4wpi, celltypes, params$amount_of_cells_to_aggregate, params$n_metacells_generate
+)
+
+saveRDS(sce_metacells_alldatasets_perCT_COp2 , file.path(object_storage_path , "metacell_sce_allCelltypes_COp2.RDS"))
+
+markers = sce_metacells_alldatasets_perCT_COp2$exN$markers
+EnhancedVolcano(markers,
+              lab = rownames(markers),
+              x = 'avg_log2FC',
+              y = 'padj',
+              title = paste0('Metacell COp2 ICE vs wt - ', "exN"),
+              pCutoff = 0.05,
+              FCcutoff = 1,
+              pointSize = 3.0,
+              labSize = 6.0,
+              drawConnectors = TRUE)
+```
+
+```{r ,warning=FALSE, message=FALSE, results = 'hide'}
+#| fig-width: 12
+#| fig-height: 10
+
+sce_metacells_alldatasets_perCT_COp2$exN$DESeq2_lst$heatmap
+```
+
+# GSEA per celltype | COp2
+```{r GSEA_perCelltype_metacells_alldatasets_COp2,warning=FALSE, message=FALSE, results = 'hide', fig.height=12, fig.width=12}
+gsea_COp2 = summarize_gsea_per_celltype(sce_metacells_alldatasets_perCT_COp2, gs, params$gsea_n_pathways)
+
+n_GOterms[["COp2"]] = gsea_COp2$goterm_summary
+```
+
+# plot relative amount of GOterms
+```{r plot_nGOterms,warning=FALSE, message=FALSE, results = 'hide', fig.height=12, fig.width=10}
+#| fig-width: 6
+#| fig-height: 8
+
+plot_data_clean <- bind_rows(n_GOterms, .id = "Dataset") %>%
+  mutate(Dataset = factor(Dataset, levels = c("COp1_4m", "COp1_10w", "COp2")))
+
+# 2. Generate the polished plot
+ggplot(plot_data_clean, aes(x = Dataset, y = relative_n, fill = celltype)) +
+  geom_col(width = 0.7, color = "white", linewidth = 0.2) + 
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) + 
+  scale_fill_viridis_d(option = "turbo", direction = 1) +
+  labs(
+    title = "Relative amount of GO terms",
+    y = "Relative Proportion",
+    fill = "Cell Type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray92"),
+    
+    plot.title = element_text(face = "bold", size = 16, margin = margin(b = 4)),
+    plot.subtitle = element_text(color = "gray40", size = 11, margin = margin(b = 15)),
+    axis.title.x = element_text(margin = margin(t = 12), face = "bold", size = 11),
+    axis.title.y = element_text(margin = margin(r = 12), face = "bold", size = 11),
+    
+    legend.title = element_text(face = "bold", size = 11),
+    legend.text = element_text(size = 10),
+    legend.key.size = unit(0.5, "cm")
+  )
+```
+
+
+# Save metacells | COp1_10w | IN/EN
+
+**This is used for prediction**
+
+```{r, warning=FALSE, message=FALSE, results = 'hide'}
+saveRDS(sce_metacells_alldatasets_perCT_10w$iN1$sce, file.path(object_storage_path , "metacell_sce_IN_organoids_COp1_10w.RDS"))
+saveRDS(sce_metacells_alldatasets_perCT_10w$exN$sce, file.path(object_storage_path , "metacell_sce_EN_organoids_COp1_10w.RDS"))
+```
+
+**Here we are trying to understand if phenotype is a variable that can explain the variability in the data**
+
+::: panel-tabset
+
+## DEA IN
+
+```{r, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+markers = plot_dea_tab(
+  sce_metacells_alldatasets_perCT_10w$iN1$DESeq2_lst,
+  file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_iN_COp1_10w_organoids.csv")
+)
+```
+
+## DEA EN
+
+```{r, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+markers = plot_dea_tab(
+  sce_metacells_alldatasets_perCT_10w$exN$DESeq2_lst,
+  file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_exN_COp1_10w_organoids.csv")
+)
+```
+
+## GSEA IN
+
+```{r DEA_GSEA_IN_metacell_10w, fig.height=12, fig.width=12}
+x = run_gsea_tab(
+  markers_csv_path = file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_iN_COp1_10w_organoids.csv"),
+  gs = gs, n_pathways = params$gsea_n_pathways,
+  up_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_10w_iN_upregulated_ICE_organoids.txt"),
+  down_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_10w_iN_downregulated_ICE_organoids.txt"),
+  title_label = "metacell COp1_10w_IN - ICE vs wt"
+)
+```
+
+## GSEA EN
+
+```{r DEA_GSEA_EN_metacell_10w, fig.height=12, fig.width=12}
+x = run_gsea_tab(
+  markers_csv_path = file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_exN_COp1_10w_organoids.csv"),
+  gs = gs, n_pathways = params$gsea_n_pathways,
+  up_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_10w_exN_upregulated_ICE_organoids.txt"),
+  down_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_10w_exN_downregulated_ICE_organoids.txt"),
+  title_label = "metacell COp1_10w_EN - ICE vs wt"
+)
+```
+:::
+
+# Save metacells | COp1_4m | IN/EN
+
+**This is used for prediction**
+
+```{r, warning=FALSE, message=FALSE, results = 'hide'}
+saveRDS(sce_metacells_alldatasets_perCT_4m$iN1$sce, file.path(object_storage_path , "metacell_sce_IN_organoids_COp1_4m.RDS"))
+saveRDS(sce_metacells_alldatasets_perCT_4m$exN$sce, file.path(object_storage_path , "metacell_sce_EN_organoids_COp1_4m.RDS"))
+```
+
+
+::: panel-tabset
+
+## DEA IN
+
+```{r, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+markers = plot_dea_tab(
+  sce_metacells_alldatasets_perCT_4m$iN1$DESeq2_lst,
+  file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_iN_COp1_4m_organoids.csv")
+)
+```
+
+## DEA EN
+
+```{r, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+markers = plot_dea_tab(
+  sce_metacells_alldatasets_perCT_4m$exN$DESeq2_lst,
+  file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_exN_COp1_4m_organoids.csv")
+)
+```
+
+## GSEA IN
+
+```{r DEA_GSEA_IN_metacell_4m, fig.height=12, fig.width=12}
+x = run_gsea_tab(
+  markers_csv_path = file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_iN_COp1_4m_organoids.csv"),
+  gs = gs, n_pathways = params$gsea_n_pathways,
+  up_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_4m_iN_upregulated_ICE_organoids.txt"),
+  down_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_4m_iN_downregulated_ICE_organoids.txt"),
+  title_label = "metacell COp1_4m_IN - ICE vs wt"
+)
+```
+
+## GSEA EN
+
+```{r DEA_GSEA_EN_metacell_4m, fig.height=12, fig.width=12}
+x = run_gsea_tab(
+  markers_csv_path = file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_exN_COp1_4m_organoids.csv"),
+  gs = gs, n_pathways = params$gsea_n_pathways,
+  up_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_4m_exN_upregulated_ICE_organoids.txt"),
+  down_txt_path = file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_COp1_4m_exN_downregulated_ICE_organoids.txt"),
+  title_label = "metacell COp1_4m_EN - ICE vs wt"
+)
+```
+:::
+
+
+# Generate metacell | COp2 4dpi | IN/EN
+
+This is used for prediction
+
+```{r,warning=FALSE, message=FALSE, results = 'hide'}
+sce_metacells_COp2_4dpi = generate_metacell_by_timepoint(
+  harmonized_seurat_COp2_4dpi_4wpi, c("iN1", "exN"), "4dpi",
+  params$amount_of_cells_to_aggregate, params$n_metacells_generate,
+  file.path(DEA_results_path, "DEA_metacell_ICE_vs_wt")
+)
+
+saveRDS(sce_metacells_COp2_4dpi$iN1, file.path(object_storage_path , "metacell_sce_IN_organoids_COp2_4dpi.RDS"))
+saveRDS(sce_metacells_COp2_4dpi$exN, file.path(object_storage_path , "metacell_sce_EN_organoids_COp2_4dpi.RDS"))
+```
+
+# Generate metacell | COp2 4wpi | IN/EN
+
+This is used for prediction
+
+```{r,warning=FALSE, message=FALSE, results = 'hide'}
+sce_metacells_COp2_4wpi = generate_metacell_by_timepoint(
+  harmonized_seurat_COp2_4dpi_4wpi, c("iN1", "exN"), "4wpi",
+  params$amount_of_cells_to_aggregate, params$n_metacells_generate,
+  file.path(DEA_results_path, "DEA_metacell_ICE_vs_wt")
+)
+
+saveRDS(sce_metacells_COp2_4wpi$iN1, file.path(object_storage_path , "metacell_sce_IN_organoids_COp2_4wpi.RDS"))
+saveRDS(sce_metacells_COp2_4wpi$exN, file.path(object_storage_path , "metacell_sce_EN_organoids_COp2_4wpi.RDS"))
+```
+
+
+# DEA | all celltypes + all datasets together
+
+```{r DEA_alldatasets_allcelltypes_together,warning=FALSE, message=FALSE, results = 'hide', fig.height=12, fig.width=12}
+all_datasets = list(
+  "10w" = sce_metacells_alldatasets_perCT_10w,
+  "4m"  = sce_metacells_alldatasets_perCT_4m,
+  "COp2" = sce_metacells_alldatasets_perCT_COp2
+)
+
+all_celltypes = unique(unlist(lapply(all_datasets, names)))
+
+# For each celltype, pull its sce from every dataset it appears in, tag which dataset
+# it came from, and merge those together on their shared genes.
+merged_list_by_celltype = lapply(all_celltypes, function(ct) {
+  sce_elements = lapply(names(all_datasets), function(ds_name) {
+    sce_obj = all_datasets[[ds_name]][[ct]]$sce
+    if (is.null(sce_obj)) return(NULL)
+    colData(sce_obj)$dataset_batch = ds_name
+    sce_obj
+  })
+  sce_elements = Filter(Negate(is.null), sce_elements)
+  merge_sces_common_genes(sce_elements)
+}) %>% setNames(all_celltypes)
+
+# Merge every celltype's combined object together, again restricted to shared genes
+master_merged_sce = merge_sces_common_genes(merged_list_by_celltype)
+
+DESeq2_lst = metacell_DESeq2_DEA(sce = master_merged_sce, phenotype_column = "phenotype", dataset_column = "dataset", design_formula = as.formula("~ maturation_stage + Protocol + Celltype + phenotype"), title_corHeatmap = "metacell correlation across all datasets and all celltypes", contrast = c("phenotype", "ICE", "wt"), organism = "organoid")
+
+markers = DESeq2_lst$markers %>% na.omit()
+
+EnhancedVolcano(markers,
+              lab = rownames(markers),
+              x = 'avg_log2FC',
+              y = 'padj',
+              title = 'Metacell ICE vs wt - all celltypes and datasets together',
+              pCutoff = 0.05,
+              FCcutoff = 1,
+              pointSize = 3.0,
+              labSize = 6.0,
+              drawConnectors = TRUE)
+```
+
+# DEA | neurons + all datasets together
+
+```{r DEA_alldatasets_neurons_together,warning=FALSE, message=FALSE, results = 'hide', fig.height=12, fig.width=12}
+all_datasets_neurons = list(
+  "EN_10w" = sce_metacells_alldatasets_perCT_10w$exN$sce, 
+  "IN_10w" = sce_metacells_alldatasets_perCT_10w$iN1$sce,
+  "EN_4m" = sce_metacells_alldatasets_perCT_4m$exN$sce, 
+  "IN_4m" = sce_metacells_alldatasets_perCT_4m$iN1$sce,
+  "EN_COp2" = sce_metacells_alldatasets_perCT_COp2$exN$sce, 
+  "IN_COp2" = sce_metacells_alldatasets_perCT_COp2$iN1$sce)
+
+master_merged_sce = merge_sces_common_genes(all_datasets_neurons)
+
+DESeq2_lst = metacell_DESeq2_DEA(sce = master_merged_sce, phenotype_column = "phenotype", dataset_column = "dataset", design_formula = as.formula("~ maturation_stage + Protocol + Celltype + phenotype"), title_corHeatmap = "metacell correlation across all datasets but only neurons", contrast = c("phenotype", "ICE", "wt"), organism = "organoid")
+
+markers = DESeq2_lst$markers %>% na.omit()
+
+write.csv(markers, file.path(DEA_results_path , "DEA_metacell_ICE_vs_wt_onlyneurons_allDatasets_organoids.csv"))
+
+EnhancedVolcano(markers,
+              lab = rownames(markers),
+              x = 'avg_log2FC',
+              y = 'padj',
+              title = 'Metacell ICE vs wt - datasets together but only neurons',
+              pCutoff = 0.05,
+              FCcutoff = 1,
+              pointSize = 3.0,
+              labSize = 6.0,
+              drawConnectors = TRUE)
+```
+
+# GSEA | neurons + all datasets together
+
+```{r GSEA_alldatasets_neurons_together,warning=FALSE, message=FALSE, results = 'hide', fig.height=12, fig.width=12}
+gsea = gsea_analysis(markers = markers, cluster = "trending clusters", gs = gs, n_pathways = params$gsea_n_pathways, plot_type = "bar")
+
+write.table(gsea$gsea_df %>% filter(NES > 0) %>% select(c("hsapiens_BP_ID", "p.adjust")),  file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_neurons_alldatasets_upregulated_ICE_organoids.txt"), row.names = F, quote = F)
+write.table(gsea$gsea_df %>% filter(NES < 0) %>% select(c("hsapiens_BP_ID", "p.adjust")),  file.path(gsea_results_path , "GOterms_metacell_ICE_vs_wt_neurons_alldatasets_downregulated_ICE_organoids.txt"), row.names = F, quote = F)
+
+# Generate treemap of NES > 0 and NES < 0
+x = plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = "metacell neurons | all datasets | - ICE vs wt")
+```
+
+
+# Generate metacell | All datasets | All Celltypes
+
+```{r,warning=FALSE, message=FALSE, results = 'hide'}
+set.seed(1)
+# NOTE: only 2 of the underlying organoid datasets are at 4wpi (one ICE, one wt) vs
+# 10 at 4dpi
+celltypes_timepoint_comparison = unique(harmonized_seurat$Celltype)
+
+metacells_timepoint_comparison = list()
+for (ct in celltypes_timepoint_comparison) {
+  message(ct)
+  sce = generate_metacell_celltype_timepointComparison(
+    harmonized_seurat, ct, params$amount_of_cells_to_aggregate, params$n_metacells_generate
+  )
+  if (length(unique(sce$timepoint)) == 2) {
+    metacells_timepoint_comparison[[ct]] = sce
+  } else {
+    message(ct, " - only one timepoint present, excluded")
+  }
+}
+
+saveRDS(metacells_timepoint_comparison, file.path(object_storage_path, "metacell_sce_perCelltype_timepointComparison_organoids.RDS"))
+```
+
+# DEA + GSEA from chunk above | All celltypes
+
+
+| Table / test | Question it answers |
+|---|---|
+| `markers_interaction_allCT` (LRT) | Does the size of the ICE effect differ significantly between 4dpi and 4wpi? (padj per gene) |
+| `phenotype_at_4dpi_allCT` (Wald) | Is this gene higher in ICE vs wt, at 4dpi only? (direction + magnitude) |
+| `phenotype_at_4wpi_allCT` (Wald) | Same question, at 4wpi only |
+| `effect_change` (4wpi minus 4dpi) | How did the ICE effect change between timepoints - grew, shrank, or reversed? |
+
+```{r,warning=FALSE, message=FALSE, results = 'hide'}
+design_full_allCT = as.formula("~ Celltype + timepoint * phenotype")
+design_reduced_allCT = as.formula("~ Celltype + timepoint + phenotype")
+
+merged_sce_timepoint_allCT = merge_sces_common_genes(metacells_timepoint_comparison)
+merged_sce_timepoint_allCT$Celltype = factor(merged_sce_timepoint_allCT$Celltype)
+
+# Does the ICE-vs-wt effect differ between 4dpi and 4wpi? (all celltypes pooled, controlling for Celltype)
+result_allCT = run_timepoint_phenotype_interaction_dea(merged_sce_timepoint_allCT, design_full_allCT, design_reduced_allCT)
+markers_interaction_allCT = result_allCT$markers
+write.csv(markers_interaction_allCT, file.path(DEA_results_path, "DEA_LRT_timepoint_ICE_allCelltypes_organoids.csv"))
+
+EnhancedVolcano(markers_interaction_allCT,
+              lab = rownames(markers_interaction_allCT),
+              x = 'avg_log2FC', y = 'padj',
+              title = 'Interaction: timepoint(4wpi vs 4dpi) x ICE vs wt - all celltypes',
+              pCutoff = 0.05, FCcutoff = 1, pointSize = 3.0, labSize = 6.0, drawConnectors = TRUE)
+
+design_full_allCT = as.formula("~ Celltype + timepoint * phenotype")
+
+# ICE vs wt effect, separately at each timepoint
+phenotype_at_4dpi_allCT = get_phenotype_effect_at_timepoint(merged_sce_timepoint_allCT, "4dpi", design_full_allCT)
+write.csv(phenotype_at_4dpi_allCT, file.path(DEA_results_path, "DEA_ICE_vs_wt_at4dpi_allCelltypes_organoids.csv"))
+
+phenotype_at_4wpi_allCT = get_phenotype_effect_at_timepoint(merged_sce_timepoint_allCT, "4wpi", design_full_allCT)
+write.csv(phenotype_at_4wpi_allCT, file.path(DEA_results_path, "DEA_ICE_vs_wt_at4wpi_allCelltypes_organoids.csv"))
+
+# Combined interpretation table: interaction significance + effect at each timepoint +
+# direction of change. Answers "does gene X have
+# higher ICE expression at 4wpi compared to 4dpi"
+interpretation_table_allCT = phenotype_at_4dpi_allCT %>%
+  select(gene, log2FC_at_4dpi = avg_log2FC, padj_at_4dpi = padj) %>%
+  inner_join(
+    phenotype_at_4wpi_allCT %>% select(gene, log2FC_at_4wpi = avg_log2FC, padj_at_4wpi = padj),
+    by = "gene"
+  ) %>%
+  inner_join(markers_interaction_allCT %>% select(gene, padj_interaction = padj), by = "gene") %>%
+  mutate(effect_change = log2FC_at_4wpi - log2FC_at_4dpi) %>%
+  arrange(padj_interaction)%>%
+  mutate(
+    direction_at_4dpi = case_when(log2FC_at_4dpi > 0 ~ "ICE > wt", log2FC_at_4dpi < 0 ~ "wt > ICE", TRUE ~ "equal"),
+    direction_at_4wpi = case_when(log2FC_at_4wpi > 0 ~ "ICE > wt", log2FC_at_4wpi < 0 ~ "wt > ICE", TRUE ~ "equal"),
+    pattern = case_when(
+      sign(log2FC_at_4dpi) != sign(log2FC_at_4wpi) & sign(log2FC_at_4dpi) != 0 & sign(log2FC_at_4wpi) != 0 ~ "reversal",
+      TRUE ~ "same direction, magnitude changed"
+    )
+  )
+
+genes_appearing_at_4wpi_only = interpretation_table_allCT %>%
+  filter(
+    padj_interaction < 0.05,           # the change over time is statistically siginifcant
+    padj_at_4dpi > 0.05 | abs(log2FC_at_4dpi) < 0.5,   # ~absent at 4dpi
+    padj_at_4wpi < 0.05,               # present (significant) at 4wpi
+  ) %>%
+  arrange(desc(abs(effect_change)))
+
+write.csv(interpretation_table_allCT, file.path(DEA_results_path, "DEA_ICE_effect_change_4dpi_vs_4wpi_allCelltypes_organoids.csv"))
+write.csv(genes_appearing_at_4wpi_only, file.path(DEA_results_path, "DEA_ICE_effect_change_at_4wpi_only_allCelltypes_organoids.csv"))
+
+# GSEA for genes/pathways specifically emerging at 4wpi - all celltypes together
+if (nrow(genes_appearing_at_4wpi_only) > 0) {
+  gsea_input_allCT_emerging = genes_appearing_at_4wpi_only %>%
+    dplyr::rename(avg_log2FC = log2FC_at_4wpi) %>%
+    select(gene, avg_log2FC)
+
+  gsea_emerging_4wpi_allCT = gsea_analysis(
+    markers = gsea_input_allCT_emerging, cluster = "trending clusters", gs = gs,
+    n_pathways = params$gsea_n_pathways, plot_type = "bar"
+  )
+
+  if (length(gsea_emerging_4wpi_allCT) > 1) {
+    write.table(gsea_emerging_4wpi_allCT$gsea_df %>% filter(NES > 0) %>% select(c("hsapiens_BP_ID", "Description", "p.adjust")),
+                file.path(gsea_results_path, "GOterms_emerging4wpi_allCelltypes_upregulatedICE_organoids.txt"), row.names = FALSE, quote = FALSE)
+    write.table(gsea_emerging_4wpi_allCT$gsea_df %>% filter(NES < 0) %>% select(c("hsapiens_BP_ID", "Description", "p.adjust")),
+                file.path(gsea_results_path, "GOterms_emerging4wpi_allCelltypes_downregulatedICE_organoids.txt"), row.names = FALSE, quote = FALSE)
+
+    x = plot_ReducedGOterms(gsea_df = gsea_emerging_4wpi_allCT$gsea_df, title_label = "all celltypes | genes emerging at 4wpi")
+  } else {
+    message("No enriched GOterms for genes emerging at 4wpi - all celltypes")
+  }
+} else {
+  message("No genes passed the 'emerging at 4wpi' filter - all celltypes")
+}
+```
+
+# DEA + GSEA from chunk above | Per celltype
+
+```{r,warning=FALSE, message=FALSE, results = 'hide'}
+design_full_perCT = as.formula("~ timepoint * phenotype")
+
+phenotype_at_4dpi_perCT = list()
+phenotype_at_4wpi_perCT = list()
+interpretation_table_perCT_list = list()
+genes_appearing_at_4wpi_perCT = list()
+gsea_emerging_4wpi_perCT = list()
+
+for (ct in names(metacells_timepoint_comparison)) {
+  cat("\n\n## ", ct, "\n\n")
+
+  sce = metacells_timepoint_comparison[[ct]]
+
+  # --- DEA: ICE vs wt, separately at each timepoint ---
+  phenotype_at_4dpi_perCT[[ct]] = get_phenotype_effect_at_timepoint(sce, "4dpi", design_full_perCT)
+  write.csv(phenotype_at_4dpi_perCT[[ct]], file.path(DEA_results_path, paste0("DEA_ICE_vs_wt_at4dpi_", ct, "_organoids.csv")))
+
+  phenotype_at_4wpi_perCT[[ct]] = get_phenotype_effect_at_timepoint(sce, "4wpi", design_full_perCT)
+  write.csv(phenotype_at_4wpi_perCT[[ct]], file.path(DEA_results_path, paste0("DEA_ICE_vs_wt_at4wpi_", ct, "_organoids.csv")))
+
+  # --- Combined table: effect at each timepoint ---
+  interpretation_table_perCT = phenotype_at_4dpi_perCT[[ct]] %>%
+    select(gene, log2FC_at_4dpi = avg_log2FC, padj_at_4dpi = padj) %>%
+    inner_join(
+      phenotype_at_4wpi_perCT[[ct]] %>% select(gene, log2FC_at_4wpi = avg_log2FC, padj_at_4wpi = padj),
+      by = "gene"
+    ) %>%
+    mutate(effect_change = log2FC_at_4wpi - log2FC_at_4dpi) %>%
+    arrange(desc(abs(effect_change))) %>%
+    mutate(
+      direction_at_4dpi = case_when(log2FC_at_4dpi > 0 ~ "ICE > wt", log2FC_at_4dpi < 0 ~ "wt > ICE", TRUE ~ "equal"),
+      direction_at_4wpi = case_when(log2FC_at_4wpi > 0 ~ "ICE > wt", log2FC_at_4wpi < 0 ~ "wt > ICE", TRUE ~ "equal"),
+      pattern = case_when(
+        sign(log2FC_at_4dpi) != sign(log2FC_at_4wpi) & sign(log2FC_at_4dpi) != 0 & sign(log2FC_at_4wpi) != 0 ~ "reversal",
+        TRUE ~ "same direction, magnitude changed"
+      )
+    )
+
+  interpretation_table_perCT_list[[ct]] = interpretation_table_perCT
+  #write.csv(interpretation_table_perCT, file.path(DEA_results_path, paste0("DEA_ICE_effect_change_4dpi_vs_4wpi_", ct, "_organoids.csv")))
+
+  # --- Genes with an ICE-vs-wt difference specifically at 4wpi, essentially absent at 4dpi ---
+  genes_ct = interpretation_table_perCT %>%
+    filter(
+      padj_at_4dpi > 0.05 | abs(log2FC_at_4dpi) < 0.5,   # ~absent at 4dpi
+      padj_at_4wpi < 0.05,                               # present (significant) at 4wpi
+    ) %>%
+    arrange(desc(abs(effect_change)))
+
+  genes_appearing_at_4wpi_perCT[[ct]] = genes_ct
+  #write.csv(genes_ct, file.path(DEA_results_path, paste0("DEA_ICE_genes_emerging_at4wpi_", ct, "_organoids.csv")))
+
+  # --- GSEA on the genes emerging at 4wpi ---
+  if (nrow(genes_ct) == 0) {
+    message(ct, " - no genes passed the 'emerging at 4wpi' filter")
+    next
+  }
+
+  gsea_input_ct = genes_ct %>%
+    dplyr::rename(avg_log2FC = log2FC_at_4wpi) %>%
+    select(gene, avg_log2FC)
+
+  gsea = gsea_analysis(markers = gsea_input_ct, cluster = ct, gs = gs, n_pathways = params$gsea_n_pathways, plot_type = "none")
+
+  if (length(gsea) == 1) {
+    message(ct, " has no enriched GOterms for genes emerging at 4wpi")
+    next
+  }
+
+  lst = plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = paste0(ct, " - genes emerging at 4wpi"))
+  gsea_emerging_4wpi_perCT[[ct]] = lst
+}
+
+saveRDS(interpretation_table_perCT_list, file.path(object_storage_path, "DEA_ICE_effect_change_perCelltype_organoids.RDS"))
+saveRDS(genes_appearing_at_4wpi_perCT, file.path(object_storage_path, "DEA_ICE_genes_emerging_at4wpi_perCelltype_organoids.RDS"))
+saveRDS(gsea_emerging_4wpi_perCT, file.path(gsea_results_path, "gsea_emerging_4wpi_perCelltype_organoids.RDS"))
+```
+
+# sessioninfo
+```{r}
+sessionInfo()
+```

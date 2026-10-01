@@ -1,0 +1,25 @@
+go cluster parent score size term parentTerm termUniqueness termUniquenessWithinCluster termDispensability
+GO:0002181 1 GO:0002181 9.56061692178739 156 cytoplasmic translation cytoplasmic translation 0.889291666666667 1 0
+GO:0022613 2 GO:0022613 9.56061692178739 504 ribonucleoprotein complex biogenesis ribonucleoprotein complex biogenesis 0.714125 0.3124 0
+GO:0042254 2 GO:0022613 7.80585032937234 325 ribosome biogenesis ribonucleoprotein complex biogenesis 0.710875 0.2892 0.956
+GO:0042274 2 GO:0022613 6.54889542793638 104 ribosomal small subunit biogenesis ribonucleoprotein complex biogenesis 0.726333333333333 0.3036 0.859
+GO:0016072 3 GO:0016072 5.39766257340248 264 rRNA metabolic process rRNA metabolic process 0.768958333333333 0.2928 0
+GO:0060142 4 GO:0060142 5.05712452881139 30 regulation of syncytium formation by plasma membrane fusion regulation of syncytium formation by plasma membrane fusion 0.628666666666667 0.207 0
+GO:1901740 4 GO:0060142 5.00806916532272 3 negative regulation of myoblast fusion regulation of syncytium formation by plasma membrane fusion 0.636583333333333 0.252571428571429 0.877
+GO:1901739 4 GO:0060142 4.8829199018842 21 regulation of myoblast fusion regulation of syncytium formation by plasma membrane fusion 0.606208333333333 0.210428571428571 0.976
+GO:0006364 3 GO:0016072 4.70938899488918 225 rRNA processing rRNA metabolic process 0.537125 0.2866 0.98
+GO:0034242 4 GO:0060142 4.47912982261671 5 negative regulation of syncytium formation by plasma membrane fusion regulation of syncytium formation by plasma membrane fusion 0.655875 0.247571428571429 0.901
+GO:0000768 4 GO:0060142 3.62802676015753 63 syncytium formation by plasma membrane fusion regulation of syncytium formation by plasma membrane fusion 0.711 0.215571428571429 0.94
+GO:0140253 4 GO:0060142 3.30062164206408 63 cell-cell fusion regulation of syncytium formation by plasma membrane fusion 0.761208333333333 0.216714285714286 0.938
+GO:0006949 5 GO:0006949 3.27152106812932 67 syncytium formation syncytium formation 0.752833333333333 1 0
+GO:0034470 3 GO:0016072 3.07087359072009 439 ncRNA processing rRNA metabolic process 0.767125 0.2836 0.857
+GO:0007520 4 GO:0060142 2.86883918743844 49 myoblast fusion regulation of syncytium formation by plasma membrane fusion 0.683708333333333 0.217571428571429 0.919
+GO:0034660 3 GO:0016072 2.7501410987003 631 ncRNA metabolic process rRNA metabolic process 0.76625 0.279 0.891
+GO:0071826 6 GO:0071826 2.710299120918 243 protein-RNA complex organization protein-RNA complex organization 0.830208333333333 0.5025 0
+GO:0030490 2 GO:0022613 2.20843930194723 53 maturation of SSU-rRNA ribonucleoprotein complex biogenesis 0.576583333333333 0.337 0.799
+GO:0022618 6 GO:0071826 2.10567304890159 235 protein-RNA complex assembly protein-RNA complex organization 0.702958333333333 0.5025 0.995
+GO:0014902 7 GO:0014902 1.9945528140121 130 myotube differentiation myotube differentiation 0.846291666666667 1 0
+GO:0006361 8 GO:0006361 1.70299883812735 14 transcription initiation at RNA polymerase I promoter transcription initiation at RNA polymerase I promoter 0.873958333333333 0.669 0
+GO:0042273 2 GO:0022613 1.47183772415238 76 ribosomal large subunit biogenesis ribonucleoprotein complex biogenesis 0.742166666666667 0.357 0.824
+GO:0006384 8 GO:0006361 1.42850137032564 8 transcription initiation at RNA polymerase III promoter transcription initiation at RNA polymerase I promoter 0.878833333333333 0.669 0.662
+GO:0006399 3 GO:0016072 1.37661976704874 197 tRNA metabolic process rRNA metabolic process 0.783666666666667 0.3304 0.808

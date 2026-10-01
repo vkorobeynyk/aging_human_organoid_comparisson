@@ -1,0 +1,8 @@
+**/human_data/
+**/organoid_data/
+core
+edgeR_dge_induced_Neurons.rds
+Organoid_analysis/logs
+Human_analysis/logs
+*.[rR][dD][sS]
+Organoid_analysis/03_organoid_Analysis_singleCell_Level.html

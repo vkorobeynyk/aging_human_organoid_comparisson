@@ -1,0 +1,38 @@
+hsapiens_BP_ID Description p.adjust
+GO:0000375 RNA splicing, via transesterification reactions 3.93151906590304e-06
+GO:0000377 RNA splicing, via transesterification reactions with bulged adenosine as nucleophile 3.93151906590304e-06
+GO:0000398 mRNA splicing, via spliceosome 3.93151906590304e-06
+GO:0006302 double-strand break repair 3.93151906590304e-06
+GO:0006310 DNA recombination 5.41380052830226e-06
+GO:0002181 cytoplasmic translation 0.0000108555732749583
+GO:0006260 DNA replication 0.000183368176825807
+GO:0000725 recombinational repair 0.000371711433664542
+GO:0071824 protein-DNA complex organization 0.000377906875946039
+GO:0000724 double-strand break repair via homologous recombination 0.000426497823071286
+GO:2000779 regulation of double-strand break repair 0.000676065619021487
+GO:0000819 sister chromatid segregation 0.000901836295562232
+GO:2000781 positive regulation of double-strand break repair 0.0013768124440106
+GO:0043484 regulation of RNA splicing 0.00149814754788
+GO:0033044 regulation of chromosome organization 0.00150653802114282
+GO:0006261 DNA-templated DNA replication 0.00214315959120684
+GO:2000819 regulation of nucleotide-excision repair 0.00229120878602791
+GO:0000070 mitotic sister chromatid segregation 0.00319439010700769
+GO:0031507 heterochromatin formation 0.00319439010700769
+GO:0090329 regulation of DNA-templated DNA replication 0.00567427242607653
+GO:0070828 heterochromatin organization 0.00616480559206517
+GO:0045814 negative regulation of gene expression, epigenetic 0.00691373372176299
+GO:0006275 regulation of DNA replication 0.00700981696883259
+GO:1902459 positive regulation of stem cell population maintenance 0.011272957516943
+GO:0048024 regulation of mRNA splicing, via spliceosome 0.0143364220151311
+GO:0002200 somatic diversification of immune receptors 0.015312407383538
+GO:0051983 regulation of chromosome segregation 0.0160212391962327
+GO:0050684 regulation of mRNA processing 0.0168758514242009
+GO:0000387 spliceosomal snRNP assembly 0.0229862386220978
+GO:0034242 negative regulation of syncytium formation by plasma membrane fusion 0.0253580594141508
+GO:1901740 negative regulation of myoblast fusion 0.0253580594141508
+GO:0051304 chromosome separation 0.0260131283178633
+GO:0000956 nuclear-transcribed mRNA catabolic process 0.0381432205037737
+GO:1905818 regulation of chromosome separation 0.0446888915320317
+GO:0006282 regulation of DNA repair 0.0446888915320317
+GO:0065004 protein-DNA complex assembly 0.0448550737665248
+GO:0000018 regulation of DNA recombination 0.0466162642028825

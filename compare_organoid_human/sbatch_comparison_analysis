@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=256000
+#SBATCH --time=10:00:00
+#SBATCH --output=job_comparison_2datasets
+
+module load miniforge3
+source activate ICE_Annina
+
+quarto render 01_Comparison_human_organoid.qmd --to html

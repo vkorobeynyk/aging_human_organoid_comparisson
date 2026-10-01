@@ -1,0 +1,19 @@
+go cluster parent score size term parentTerm termUniqueness termUniquenessWithinCluster termDispensability
+GO:0022613 1 GO:0022613 7.51535600994932 504 ribonucleoprotein complex biogenesis ribonucleoprotein complex biogenesis 0.654277777777778 0.3124 0
+GO:0042254 1 GO:0022613 7.51190527158262 325 ribosome biogenesis ribonucleoprotein complex biogenesis 0.649111111111111 0.2892 0.956
+GO:0016072 2 GO:0016072 3.21315299694306 264 rRNA metabolic process rRNA metabolic process 0.855333333333333 0.51 0
+GO:0006364 2 GO:0016072 3.16560098344574 225 rRNA processing rRNA metabolic process 0.573888888888889 0.51 0.98
+GO:0042274 1 GO:0022613 2.95211323548994 104 ribosomal small subunit biogenesis ribonucleoprotein complex biogenesis 0.667388888888889 0.3036 0.859
+GO:0042273 1 GO:0022613 2.52585738714542 76 ribosomal large subunit biogenesis ribonucleoprotein complex biogenesis 0.687555555555556 0.357 0.824
+GO:0033108 3 GO:0033108 2.48292829861737 101 mitochondrial respiratory chain complex assembly mitochondrial respiratory chain complex assembly 0.770611111111111 0.600333333333333 0
+GO:0031342 4 GO:0031342 2.12895641102513 29 negative regulation of cell killing negative regulation of cell killing 0.854888888888889 0.503 0
+GO:0002181 6 GO:0002181 2.0882177099241 156 cytoplasmic translation cytoplasmic translation 0.905222222222222 0.6585 0
+GO:0002707 5 GO:0002707 2.0882177099241 58 negative regulation of lymphocyte mediated immunity negative regulation of lymphocyte mediated immunity 0.830666666666667 0.379333333333333 0
+GO:0030490 1 GO:0022613 2.0882177099241 53 maturation of SSU-rRNA ribonucleoprotein complex biogenesis 0.605888888888889 0.337 0.799
+GO:0071826 3 GO:0033108 2.05319142926973 243 protein-RNA complex organization mitochondrial respiratory chain complex assembly 0.804111111111111 0.481333333333333 0.561
+GO:0051412 7 GO:0051412 2.00124683559116 14 response to corticosterone response to corticosterone 0.9865 1 0
+GO:0032543 6 GO:0002181 1.84590672430757 130 mitochondrial translation cytoplasmic translation 0.907166666666667 0.6585 0.683
+GO:0001911 4 GO:0031342 1.84590672430757 26 negative regulation of leukocyte mediated cytotoxicity negative regulation of cell killing 0.780555555555556 0.503 0.994
+GO:0022618 3 GO:0033108 1.84590672430757 235 protein-RNA complex assembly mitochondrial respiratory chain complex assembly 0.630111111111111 0.455666666666667 0.638
+GO:0045953 5 GO:0002707 1.84590672430757 20 negative regulation of natural killer cell mediated cytotoxicity negative regulation of lymphocyte mediated immunity 0.769444444444444 0.358666666666667 0.929
+GO:0002716 5 GO:0002707 1.84590672430757 21 negative regulation of natural killer cell mediated immunity negative regulation of lymphocyte mediated immunity 0.824388888888889 0.357333333333333 0.933

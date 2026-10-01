@@ -1,0 +1,296 @@
+---
+title: "ICE Annina 10x sequencing analysis - Processing of human data"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  data_dir: "/home/vkorob/data/ICE_Annina/human_data"
+  output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  max_age: 80
+  min_cells_per_patient: 500
+  cells_to_aggregate: 15
+  n_metacells_per_patient: 10
+---
+
+# Introduction
+
+Annina performed several experiments where she isolated nuclei and whole-cell based on mCherry and sequenced the organoids. The latter were treated with ICE, turning them into "aged organoids", so we have control (WT) and ICE phenotypes. The overall goal of the project is to understand if aging signatures, in terms of gene expression are shared when comparing organoids and human data. For that, we perform data analysis of organoids and human data and also build glmnet models (separately for each dataset). In the end, we compare all the results that we obtained.
+
+::: callout-note
+Dataset available at:
+- Raw data - EGA: <https://ega-archive.org/studies/EGAS00001006345>
+- Processed files - Zenodo: <https://zenodo.org/records/13343729>
+- Publication - Nature: <https://www.nature.com/articles/s41588-024-02050-9#Sec9>
+
+All patients from all sources (cities) were included but only following cells were kept:
+
+- Age < `r params$max_age` — patients above this age are excluded because their transcriptome may increasingly reflect age-related disease rather than "clean" aging signal, which would confound the aging signature we're after.
+- We perform the analysis only on Inhibitory and excitatory neurons
+- Patients with fewer than `r params$min_cells_per_patient` cells for a given celltype are dropped, to ensure the per-patient pseudobulk/metacell estimate is reasonably robust.
+:::
+
+# Setup
+
+```{r setup, tags=c(), warning=FALSE, message=FALSE}
+options(future.globals.maxSize = 8000 * 1024^2)
+suppressMessages({
+  library(Seurat)
+  library(harmony)
+  library(scater)
+  library(caret)
+  library(dplyr)
+  library(parallel)
+  library(ggpubr)
+  library(ggplot2)
+  library(Matrix)
+  library(stringr)
+  library(magrittr)
+  library(EnhancedVolcano)
+  library(glmnet)
+  library(genekitr)
+  library(geneset)
+  library(DESeq2)
+  library(pheatmap)
+  library(tidyr)
+  library(ggVennDiagram)
+  library(sva)
+  library(rrvgo)
+})
+source(params$helper_functions_path)
+source(params$qc_pipeline_functions_path)
+dir.create(params$output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Generate metacells
+
+For each cell type (Inhibitory / Excitatory neurons), we: load the per-file count
+matrices, filter to patients with enough cells, aggregate per-patient metadata,
+then bootstrap-aggregate cells into metacells (pseudobulk-like profiles) via
+`bootstrap.metacells()`. The logic is identical for both cell types.
+
+```{r build-metacell-function, warning=FALSE, message=FALSE}
+#' Build a metacell SingleCellExperiment for one cell type, AND collect the filtered
+#' (pre-aggregation) single-cell counts/metadata used to build it
+#'
+#' @param celltype character, e.g. "Inhibitory_Neurons"
+#' @param counts_files character vector of .RDS count-matrix filenames
+#' @param data_dir directory containing counts_files and cell_metadata.txt
+#' @param cellmetadata_full full cell-level metadata table (all celltypes/patients)
+#' @param max_age patients with Age >= max_age are excluded
+#' @param min_cells_per_patient patients with fewer cells than this are excluded
+#' @param cells_to_aggregate number of real cells aggregated into one metacell
+#' @param n_metacells number of bootstrapped metacells generated per patient
+#' @return list(metacell_sce = ..., singlecell_sce = ...) - metacell_sce is
+#'   log-normalized with zero-count genes removed (as before); singlecell_sce is the
+#'   same filtered cells/patients, unaggregated, log-normalized, for single-cell-level
+#'   DEA (e.g. 02b_human_Analysis_singleCell_Level.qmd)
+build_metacell_sce = function(celltype, counts_files, data_dir, cellmetadata_full,
+                               max_age, min_cells_per_patient,
+                               cells_to_aggregate, n_metacells) {
+
+  per_file_results = lapply(counts_files, function(f) {
+    counts = readRDS(file.path(data_dir, f))
+
+    # remove LINC genes as we are not interested in them
+    counts = counts[!grepl("LINC", rownames(counts)), ]
+
+    # filter cells with 0 counts
+    counts = counts[, colSums(counts) != 0]
+
+    cellmetadata = cellmetadata_full %>%
+      filter(cell_id %in% colnames(counts)) %>%
+      tibble::remove_rownames() %>%
+      tibble::column_to_rownames("cell_id") %>%
+      filter(CellType == celltype, Age < max_age)
+
+    if (nrow(cellmetadata) == 0) return(NULL)
+
+    # keep only patients with enough cells to give a robust per-patient estimate
+    robust_patients = cellmetadata %>%
+      group_by(Individual_ID) %>%
+      summarise(n_cells = n(), .groups = "drop") %>%
+      filter(n_cells > min_cells_per_patient) %>%
+      pull(Individual_ID)
+
+    cellmetadata = cellmetadata %>% filter(Individual_ID %in% robust_patients)
+    if (nrow(cellmetadata) == 0) return(NULL)
+
+    # single-cell counts/metadata for this file, filtered but NOT aggregated - kept
+    # for single-cell-level DEA downstream
+    singlecell_counts_this_file = counts[, rownames(cellmetadata), drop = FALSE]
+    singlecell_metadata_this_file = cellmetadata
+
+    # one metadata row per patient (numeric fields averaged, character fields taken as first)
+    summary_meta = cellmetadata %>%
+      group_by(Individual_ID) %>%
+      summarise(
+        across(where(is.numeric), ~ mean(.x, na.rm = TRUE)),
+        across(where(is.character), ~ dplyr::first(.x)),
+        .groups = "drop"
+      )
+
+    # bootstrap-aggregate cells into metacells, per patient
+    # bootstrap.metacells() now sets its own seed internally, so this is reproducible
+    # regardless of how much RNG state upstream steps consumed before this loop runs -
+    # previously it had no local seeding, so results could differ silently between
+    # reruns depending on anything earlier in the session/script that drew from the RNG
+    pseudocounts = lapply(summary_meta$Individual_ID, function(pt) {
+      pt_meta = cellmetadata %>% filter(Individual_ID == pt)
+      pt_counts = t(counts[, rownames(pt_meta), drop = FALSE])
+      bootstrap.metacells(df = pt_counts, size = cells_to_aggregate, n = n_metacells)
+    }) %>% do.call(rbind, .)
+
+    # expand per-patient metadata to one row per generated metacell, with explicit IDs
+    # (built directly here, rather than parsed back out of rownames later -> less fragile)
+    meta_expanded = summary_meta[rep(seq_len(nrow(summary_meta)), each = n_metacells), ]
+    meta_expanded$metacell_id = paste0(
+      rep(summary_meta$Individual_ID, each = n_metacells), "_Cell_",
+      seq_len(nrow(meta_expanded))
+    )
+
+    rownames(pseudocounts) = meta_expanded$metacell_id
+    rownames(meta_expanded) = meta_expanded$metacell_id
+
+    list(
+      pseudocounts = pseudocounts, metadata = meta_expanded,
+      singlecell_counts = singlecell_counts_this_file, singlecell_metadata = singlecell_metadata_this_file
+    )
+  })
+
+  per_file_results = Filter(Negate(is.null), per_file_results)
+
+  # --- metacell object (unchanged from before) ---
+  pseudocounts_all = do.call(rbind, lapply(per_file_results, `[[`, "pseudocounts"))
+  metadata_all = do.call(rbind, lapply(per_file_results, `[[`, "metadata"))
+
+  metacell_sce = SingleCellExperiment(assays = list(counts = t(pseudocounts_all)), colData = metadata_all)
+  metacell_sce = logNormCounts(metacell_sce)
+  metacell_sce = metacell_sce[rowSums(logcounts(metacell_sce)) != 0, ]
+
+  # --- single-cell object (filtered cells/patients, not aggregated) ---
+  common_genes = Reduce(intersect, lapply(per_file_results, function(x) rownames(x$singlecell_counts)))
+  singlecell_counts_all = do.call(cbind, lapply(per_file_results, function(x) x$singlecell_counts[common_genes, , drop = FALSE]))
+  singlecell_metadata_all = do.call(rbind, lapply(per_file_results, `[[`, "singlecell_metadata"))
+
+  singlecell_sce = SingleCellExperiment(assays = list(counts = singlecell_counts_all), colData = singlecell_metadata_all)
+  singlecell_sce = logNormCounts(singlecell_sce)
+  singlecell_sce = singlecell_sce[rowSums(logcounts(singlecell_sce)) != 0, ]
+
+  list(metacell_sce = metacell_sce, singlecell_sce = singlecell_sce)
+}
+```
+
+```{r run-metacell-generation, warning=FALSE, message=FALSE}
+counts_path = list.files(params$data_dir, pattern = ".RDS")
+cellmetadata_full = read.table(file.path(params$data_dir, "cell_metadata.txt"))
+
+celltypes = c("Inhibitory_Neurons", "Excitatory_Neurons")
+
+results_list = lapply(celltypes, function(ct) {
+  build_metacell_sce(
+    celltype = ct,
+    counts_files = counts_path,
+    data_dir = params$data_dir,
+    cellmetadata_full = cellmetadata_full,
+    max_age = params$max_age,
+    min_cells_per_patient = params$min_cells_per_patient,
+    cells_to_aggregate = params$cells_to_aggregate,
+    n_metacells = params$n_metacells_per_patient
+  )
+})
+names(results_list) = celltypes
+
+metacell_sce_IN = results_list[["Inhibitory_Neurons"]]$metacell_sce
+metacell_sce_EN = results_list[["Excitatory_Neurons"]]$metacell_sce
+singlecell_sce_IN = results_list[["Inhibitory_Neurons"]]$singlecell_sce
+singlecell_sce_EN = results_list[["Excitatory_Neurons"]]$singlecell_sce
+
+saveRDS(metacell_sce_IN, file.path(params$output_dir, "metacell_sce_IN_human.RDS"))
+saveRDS(metacell_sce_EN, file.path(params$output_dir, "metacell_sce_EN_human.RDS"))
+
+saveRDS(singlecell_sce_IN, file.path(params$output_dir, "singlecell_sce_IN_human.RDS"))
+saveRDS(singlecell_sce_EN, file.path(params$output_dir, "singlecell_sce_EN_human.RDS"))
+```
+
+# Patient statistics
+```{r statistics, warning=FALSE, message=FALSE, fig.height=10, fig.width=10}
+summarize_categorical = function(df, var) {
+  df %>%
+    count(.data[[var]]) %>%
+    mutate(
+      Variable = var,
+      Category = as.character(.data[[var]]),
+      Value = paste0(n, " (", round(100 * n / sum(n), 1), "%)")
+    ) %>%
+    select(Variable, Category, Value)
+}
+
+build_patient_summary = function(sce) {
+  patient_metadata = colData(sce) %>%
+    as.data.frame() %>%
+    distinct(Individual_ID, .keep_all = TRUE)
+
+  age_summary = patient_metadata %>%
+    summarise(
+      age_min = min(Age, na.rm = TRUE),
+      age_max = max(Age, na.rm = TRUE),
+      age_mean = round(mean(Age, na.rm = TRUE), 1),
+      age_sd = round(sd(Age, na.rm = TRUE), 1)
+    )
+
+  age_row = data.frame(
+    Variable = "Age",
+    Category = "range (mean \u00b1 SD)",
+    Value = paste0(age_summary$age_min, "\u2013", age_summary$age_max,
+                    " (", age_summary$age_mean, " \u00b1 ", age_summary$age_sd, ")")
+  )
+
+  bind_rows(
+    age_row,
+    summarize_categorical(patient_metadata, "Sex"),
+    summarize_categorical(patient_metadata, "Diagnosis"),
+    summarize_categorical(patient_metadata, "Sample_Source")
+  ) %>%
+    mutate(n_patients = nrow(patient_metadata))
+}
+
+# Build both, tag with celltype, combine
+combined_long = bind_rows(
+  build_patient_summary(metacell_sce_IN) %>% mutate(Celltype = "IN"),
+  build_patient_summary(metacell_sce_EN) %>% mutate(Celltype = "EN")
+)
+
+# Pivot to side-by-side IN | EN comparison, with patient counts in the column headers
+n_IN = combined_long %>% filter(Celltype == "IN") %>% pull(n_patients) %>% unique()
+n_EN = combined_long %>% filter(Celltype == "EN") %>% pull(n_patients) %>% unique()
+
+combined_wide = combined_long %>%
+  select(Variable, Category, Celltype, Value) %>%
+  pivot_wider(names_from = Celltype, values_from = Value) %>%
+  rename(!!paste0("IN (n=", n_IN, ")") := IN, !!paste0("EN (n=", n_EN, ")") := EN)
+
+library(kableExtra)
+
+combined_wide %>%
+  kable(caption = "Patient characteristics by cell type", align = "l") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE)
+```
+
+# sessioninfo
+
+```{r load_data}
+sessionInfo()
+```

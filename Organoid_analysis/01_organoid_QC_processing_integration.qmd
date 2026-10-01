@@ -1,0 +1,594 @@
+---
+title: "ICE Annina 10x sequencing analysis - QC/processing/integration of organoid data"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  organoid_data_dir: "/home/vkorob/data/ICE_Annina/organoid_data/"
+  object_storage_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
+  dea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results"
+  publication_plots_dir: "/home/vkorob/data/ICE_Annina/publication_plots"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  qc_nmads_lower: 2.5
+  qc_nmads_higher: 2.5
+  excluded_datasets:
+    - "COp1_cell_4mo_4wpi_wt"
+    - "COp2_cell_4m_4dpi_Levitated"
+    - "COp1_nuclei_10w_4dpi_control"
+    - "COp1_nuclei_10w_4dpi_mChMix"
+    - "COp1_cell_4mo_4wpi_mCh"
+---
+
+# Introduction
+Annina performed several experiments where she isolated nuclei and whole-cell based on mCherry and sequenced the organoids. The latter were treated with ICE, turning them into "aged organoids", so we have control (WT) and ICE ages. The overall goal of the project is to understand if aging signatures, in terms of gene expression are shared when comparing organoids and human data. For that, we perform data analysis or organoids and human data and also build glmnet models (separately for each dataset). In the end, we compare all the results that we obtained.
+
+::: callout-note
+**What this script does:** imports the raw 10x organoid datasets, runs per-dataset QC
+filtering (adaptive MAD-based outlier removal on library size, detected features, and
+mitochondrial content), excludes datasets that failed QC or were experimental
+(nuclei-based) runs, processes each remaining dataset (SCTransform, PCA, clustering,
+UMAP), removes predicted doublets, integrates all datasets together with Harmony,
+annotates clusters into cell types (with a subclustering pass on one ambiguous
+cluster), removes stressed-cell clusters, and saves the final integrated/annotated
+Seurat object plus a set of QC/diagnostic and publication figures.
+:::
+
+# libraries
+
+```{r libs, warning=FALSE, message=FALSE}
+options(scipen = 1, digits = 3) 
+set.seed(1)
+
+suppressMessages({
+  library(dplyr)
+  library(Seurat)
+  library(edgeR)
+  library(harmony)
+  library(stringr)
+  library(stringi)
+  library(genekitr)
+  library(ggplot2)
+  library(geneset)
+  library(scater)
+  library(magrittr)
+  library(DoubletFinder)
+  library(SingleCellExperiment)
+  library(DT)
+  library(EnhancedVolcano)
+  library(cluster)
+  library(DESeq2)
+  library(pheatmap)
+  library(rrvgo)
+  library(tidyr)
+  library(openxlsx)
+  library(ggpubr)
+  library(patchwork)
+})
+
+# Load local pipeline utilities
+source(params$qc_pipeline_functions_path)
+source(params$helper_functions_path)
+
+# Output directory path configurations
+object_storage_path = params$object_storage_path
+DEA_results_path = params$dea_results_path
+dir.create(DEA_results_path, showWarnings = FALSE, recursive = TRUE)
+```
+
+# Data Import
+
+```{r load data, warning=FALSE, message=FALSE}
+dataset_path = list.dirs(params$organoid_data_dir, full.names = FALSE) %>% 
+  stri_remove_empty()
+
+# Iteratively import 10X directories into a named list of Seurat objects
+SO_lst = list()
+for(dataset in dataset_path) {
+  SO_lst[[dataset]] = Read10X(data.dir = file.path(params$organoid_data_dir, dataset))
+  SO_lst[[dataset]] = CreateSeuratObject(SO_lst[[dataset]], min.cells = 5, min.features = 200)
+  SO_lst[[dataset]][["dataset"]] = dataset
+}
+```
+
+**Here the QC could be less strict, but since our goal is to look at changes at the entire population levels, we thought that stringer QC would remove cells with more uncertainty**
+
+# QC Plots
+
+::: panel-tabset
+```{r qc, results="asis", warning=FALSE}
+for (dataset in dataset_path) {
+  cat("## ", dataset, "\n")
+  print(SO_lst[[dataset]])
+  
+  # Adaptive MADs filtering (features thresholded at > 1000 dynamically inside pipeline function)
+  SO_lst[[dataset]] = run_general_qc_sc_pipeline_R(
+    SO_lst[[dataset]], 
+    to_filter = TRUE, 
+    nmads_lower = params$qc_nmads_lower, 
+    nmads_higher = params$qc_nmads_higher
+  )
+  
+  print(SO_lst[[dataset]])
+  cat('\n\n')
+}
+```
+:::
+
+::: callout-important
+More datasets were sequenced but they were either experimental (nuclei datasets - "that was the first try before we figured out that we should go for whole cells" ) or didnt pass quality control
+
+So we removed:
+
+-   2 nuclei datasets: "COp1_nuclei_10w_4dpi_control" + "COp1_nuclei_10w_4dpi_mChMix"
+-   2 datasets due to bad quality: COp1_cell_4mo_4wpi_wt and COp2_cell_4m_4dpi_Levitated
+-   1 dataset because the control (COp1_cell_4mo_4wpi_wt) was removed "COp1_cell_4mo_4wpi_mCh"
+:::
+
+# Processing
+
+```{r processing, warning=FALSE, message=FALSE}
+# Filter out the excluded datasets
+dataset_path = dataset_path[!dataset_path %in% params$excluded_datasets]
+
+# Run baseline SCTransform processing and clustering per dataset
+SO_lst_processed = list()
+for (dataset in dataset_path) {
+  cat("## ", dataset, "\n")
+  SO = SO_lst[[dataset]]
+  
+  set.seed(1)
+  SO = SCTransform(SO, verbose = FALSE)
+  SO = RunPCA(SO, features = VariableFeatures(object = SO)) 
+  SO = FindNeighbors(SO, dims = 1:20)
+  SO = FindClusters(SO, resolution = 1)
+  SO = RunUMAP(SO, dims = 1:20)
+  
+  DimPlot(SO, reduction = "umap", group.by = "seurat_clusters")
+  SO_lst_processed[[dataset]] = SO
+  
+  cat('\n\n')
+}
+```
+
+# Doublet removal
+
+```{r doublet_removal, warning=FALSE, message=FALSE, results = 'hide'}
+for (dataset in names(SO_lst_processed)) {
+  message(dataset)
+  SO = SO_lst_processed[[dataset]]
+  
+  # Parameter Sweep to identify optimal pK via bimodality coefficient distribution
+  set.seed(1)
+  sweep = paramSweep(SO, PCs = 1:10, sct = TRUE)
+  sweep.stats = summarizeSweep(sweep, GT = FALSE)
+  bcmvn = find.pK_noplot(sweep.stats)
+  
+  bcmvn.max = bcmvn[which.max(bcmvn$BCmetric),] 
+  optimal.pk = bcmvn.max$pK
+  optimal.pk = as.numeric(levels(optimal.pk))[optimal.pk] 
+  
+  nExp.poi = round(optimal.pk * nrow(SO@meta.data))
+  
+  # Predict and filter out homotypic doublets
+  set.seed(1)
+  SO = doubletFinder(SO, PCs = 1:10, pN = 0.25, pK = optimal.pk, nExp = nExp.poi, reuse.pANN = FALSE, sct = TRUE)
+  
+  new_cols = tail(SO@meta.data %>% colnames, 2) # (pANN_..., DF.classifications_...)
+  colnames(SO@meta.data)[colnames(SO@meta.data) == new_cols[1]] = "doublet_pANN"
+  colnames(SO@meta.data)[colnames(SO@meta.data) == new_cols[2]] = "doublet_classification"
+
+  DimPlot(SO, group.by = "doublet_classification") %>% print
+
+  # Keep only high-confidence singlets.
+  SO = SO[, SO@meta.data[["doublet_classification"]] == "Singlet"]
+  SO_lst_processed[[dataset]] = SO
+}
+
+saveRDS(SO_lst_processed, file.path(object_storage_path, "SO_lst_processed_organoids.RDS"))
+```
+
+# Perform integration 1 final dataset HARMONY
+
+```{r harmony_integration, warning=FALSE, message=FALSE,fig.height=12,fig.width=12}
+merged_seurat = Reduce(merge, SO_lst_processed)
+DefaultAssay(merged_seurat) = "SCT"
+
+# Select common integration features across batches
+integ_features = SelectIntegrationFeatures(object.list = SO_lst_processed, assay = rep("SCT", length(SO_lst_processed)), nfeatures = 2000)
+merged_seurat <- merged_seurat %>% 
+    RunPCA(features = integ_features, npcs = 20, verbose = FALSE)
+
+# Generate unified metadata labels from dataset strings
+merged_seurat@meta.data %<>% mutate(
+  phenotype = ifelse(grepl("mCh", dataset), "ICE", "wt"),
+  Protocol = dataset %>% str_split("_") %>% lapply(., "[[", 1) %>% unlist, 
+  maturation_stage = dataset %>% str_split("_") %>% lapply(., "[[", 3) %>% unlist %>% gsub("4mo", "4m", .), 
+  timepoint = dataset %>% str_split("_") %>% lapply(., "[[", 4) %>% unlist
+)
+
+# Run batch correction on PCA space
+set.seed(1)
+harmonized_seurat = RunHarmony(
+  merged_seurat, 
+  group.by.vars = c("dataset", "Protocol"), 
+  reduction = "pca", 
+  assay.use = "SCT", 
+  reduction.save = "harmony"
+)
+
+# UMAP projection & Clustering on the Integrated Space
+harmonized_seurat = RunUMAP(harmonized_seurat, reduction = "harmony", assay = "SCT", dims = 1:20)
+harmonized_seurat = FindNeighbors(object = harmonized_seurat, reduction = "harmony")
+harmonized_seurat = FindClusters(harmonized_seurat, resolution = 0.2)
+
+# Diagnostic Integration UMAPs
+SOplot_dataset = DimPlot(harmonized_seurat, reduction = "umap", group.by = "dataset", raster = FALSE) + ggtitle("")
+SOplot_dataset
+DimPlot(harmonized_seurat, reduction = "umap", group.by = "Protocol")
+DimPlot(harmonized_seurat, reduction = "umap", group.by = "seurat_clusters")
+DimPlot(harmonized_seurat, reduction = "umap", group.by = "phenotype")
+
+DefaultAssay(merged_seurat) = "RNA"
+saveRDS(harmonized_seurat, file.path(object_storage_path, "SO_integratedHarmony_alldatasetsTogether_organoids_allClusters.RDS"))
+```
+
+::: panel-tabset
+## Annotation
+
+::: callout-note
+Annotations are cross-referenced with established atlas markers:
+
+    -   https://github.com/theislab/neural_organoid_atlas/blob/main/Fig1_HNOCA_establishment/manual_annotation.ipynb
+    -   https://www.nature.com/articles/s41467-023-39447-9/figures/1
+    -   https://www.nature.com/articles/s41586-024-08172-8#Sec1
+
+
+Initial inspection highlights: Cluster 2 shows high stress pathway markers and Cluster 5 represents a multi-lineage population requiring subclustering.
+:::
+
+```{r, results="asis", warning=FALSE}
+# Run differential expression across raw clusters for reference mapping
+harmonized_seurat_markers = FindAllMarkers(object = harmonized_seurat, assay = "RNA", test.use = "wilcox", max.cells.per.ident = 10000) %>% 
+  filter(p_val_adj < 0.05) %>%
+  mutate(across(.cols = c("p_val", "avg_log2FC", "p_val_adj"), .fns = ~as.numeric(format(., 3))))
+
+write.csv(harmonized_seurat_markers, file.path(DEA_results_path, "DEA_seurat_clusters_annotation_entireDataset_organoids.csv"))
+
+# Map clusters to cell-type classifications
+harmonized_seurat$Celltype = stri_replace_all_regex(
+  harmonized_seurat$seurat_clusters,
+  pattern = c('^0$', '^1$', "2", '3', "4", "5", "6", "7", "8", "9","10"), 
+  replacement = c('exN', 'Astrocytes1', "Stressed_cells", 'iN1', "Mitotic_cells", "iN2","OPC_Oligodendrocytes", "Astrocytes2", "NSC", "Choroid_plexus", "??"), 
+  vectorize_all = FALSE
+)
+```
+
+## Remove cluster with 60 cells
+
+```{r remove_cluster_60cells, warning=FALSE, message=FALSE}
+table(harmonized_seurat$seurat_clusters)
+
+cluster_sizes = table(harmonized_seurat$seurat_clusters)
+small_cluster = names(cluster_sizes)[cluster_sizes < 100] 
+
+cells_keep = colnames(harmonized_seurat)[!harmonized_seurat$seurat_clusters %in% small_cluster]
+harmonized_seurat = subset(harmonized_seurat, cells = cells_keep)
+harmonized_seurat$seurat_clusters = droplevels(harmonized_seurat$seurat_clusters)
+```
+
+## Subclustering of OPC_Oligodendrocytes cluster
+
+```{r subclustering, warning=FALSE, message=FALSE}
+set.seed(1)
+SO = subset(harmonized_seurat, Celltype == "OPC_Oligodendrocytes")
+
+SO = RunUMAP(SO, reduction = "harmony", assay = "SCT", dims = 1:20)
+SO = FindNeighbors(object = SO, reduction = "harmony")
+SO = FindClusters(SO, resolution = 0.2)
+
+DimPlot(SO, group.by = "seurat_clusters")
+
+# Check Canonical markers to resolve inner heterogeneity
+DotPlot(SO, group.by = "seurat_clusters", features = c("GFAP", "CLU", "EOMES", "ASCL1", "NEUROG1", "DLX1", "GAD2", "OLIG1", "OLIG2")) + 
+  ggtitle("canonical marker expression") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+# Assign high-resolution subsets back to main metadata slot
+cl_0 = Cells(subset(SO, seurat_clusters %in% c(0)))
+harmonized_seurat@meta.data$Celltype[which(Cells(harmonized_seurat) %in% cl_0)] = "exNPC"
+
+cl_1 = Cells(subset(SO, seurat_clusters %in% c(1)))
+harmonized_seurat@meta.data$Celltype[which(Cells(harmonized_seurat) %in% cl_1)] = "OPC_Oligodendrocytes"
+
+cl_2 = Cells(subset(SO, seurat_clusters %in% c(2)))
+harmonized_seurat@meta.data$Celltype[which(Cells(harmonized_seurat) %in% cl_2)] = "iNPC"
+```
+
+## Final cluster annotation
+
+```{r, fig.height=10,fig.width=10, warning=FALSE,message=FALSE}
+DotPlot(
+  harmonized_seurat,
+  group.by = "Celltype",
+  features = c("NEUROD2", "NEUROD6", "TBR1", "AQP4", "APOE", "GFAP", "CLU", "CA9", "VEGFA", "DDIT3", "DDIT4", "VCAM1", "KRT75", "OLIG1", "OLIG2", "MBP", "GAD1", "GAD2", "LHX6", "DLX1", "DLX2", "MKI67", "RSPO2", "RSPO3", "HOPX", "EMX1", "EOMES", "ASCL1")
+) +
+  scale_color_gradient2(low = "#2166AC", mid = "white", high = "#B2182B", midpoint = 0) +
+  labs(title = "Canonical marker expression", x = NULL, y = NULL, size = "Percent\nExpressed", color = "Average\nExpression") +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 10)),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 11, face = "italic"),
+    axis.text.y = element_text(size = 12),
+    panel.grid.major = element_line(color = "gray92"),
+    panel.grid.minor = element_blank(),
+    legend.title = element_text(size = 11, face = "bold"),
+    legend.text = element_text(size = 10)
+  )
+
+celltype_annotations
+DimPlot(harmonized_seurat, reduction = "umap", group.by = "Celltype")
+```
+
+## Remove stressed cells cluster
+
+```{r, fig.height=10,fig.width=10, warning=FALSE,message=FALSE}
+# Isolate high-quality physiological clusters by explicitly removing stressed groups
+harmonized_seurat = subset(harmonized_seurat, Celltype %in% c("Stressed_cells"), invert = TRUE)
+
+SOplot_celltypes = DimPlot(harmonized_seurat, reduction = "umap", group.by = "Celltype", raster = F) + ggtitle("")
+```
+
+## Correlation of RB/MT/counts/features per CT content
+
+```{r, results="asis", warning=FALSE, fig.height=8, fig.width=12}
+lst = list()
+for(cluster in unique(harmonized_seurat$Celltype)) {
+  x = subset(harmonized_seurat, Celltype == cluster)
+  df_proportions = x@meta.data %>% select(percent.mito, percent.ribo, phenotype, Protocol, nCount_RNA, nFeature_RNA)
+
+  lst[["phenotype"]][[cluster]] = ggplot(df_proportions, aes(x = percent.mito, y = percent.ribo)) + 
+    geom_density_2d_filled(show.legend = FALSE) +
+    facet_grid(~phenotype) +
+    theme_bw() +
+    ggtitle(cluster)
+  
+  lst[["Protocol"]][[cluster]] = ggplot(df_proportions, aes(x = percent.mito, y = percent.ribo)) + 
+    geom_density_2d_filled(show.legend = FALSE) +
+    facet_grid(~Protocol) +
+    theme_bw() +
+    ggtitle(cluster)
+  
+  lst[["counts_feat"]][[cluster]] = ggplot(df_proportions, aes(x = nCount_RNA, y = nFeature_RNA, color = phenotype)) + 
+    geom_point(size = 0.75) +
+    theme_bw() +
+    ggtitle(cluster) 
+}
+
+# Assemble diagnostic diagnostic panels
+diagnostics_mt_rb_content_PerCelltype = wrap_plots(lst[["phenotype"]]) + 
+  plot_annotation(
+    title = 'Mitochondrial and ribosomal content (%) per Celltype',
+    theme = theme(plot.title = element_text(size = 18, hjust = 0.5))
+  )
+
+wrap_plots(lst[["Protocol"]]) + 
+  plot_annotation(
+    title = 'Mitochondrial and ribosomal content (%) per Celltype',
+    theme = theme(plot.title = element_text(size = 18, hjust = 0.5))
+  )
+
+diagnostics_counts_features = wrap_plots(lst[["counts_feat"]]) + 
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    title = 'Detected counts and features per Celltype',
+    theme = theme(plot.title = element_text(size = 18, hjust = 0.5))
+  )
+```
+
+```{r}
+# Construct dynamic combination identifiers for experimental design comparisons
+harmonized_seurat@meta.data %<>% mutate(
+  Protocol_timepoint = str_c(Protocol, "_", timepoint),
+  Protocol_maturation_stage = str_c(Protocol, "_", maturation_stage), 
+  Celltype_timepoint = str_c(Celltype, "_", timepoint),
+  Celltype_phenotype = str_c(Celltype, "_", phenotype),
+  Protocol_timepoint_Celltype = str_c(Protocol_timepoint, "_", Celltype), 
+  Protocol_timepoint_Celltype_phenotype = str_c(Protocol_timepoint, "_", Celltype, "_", phenotype), 
+  Celltype_phenotype = str_c(Celltype, "_", phenotype),
+  Protocol_timepoint_phenotype = str_c(Protocol, "_", timepoint, "_", phenotype),
+  Protocol_phenotype = str_c(Protocol, "_", phenotype)
+)
+
+# Crosscheck FACS sorting efficiency against factual mCherry transcript capture
+harmonized_seurat$facsP_mChN_cells = ifelse(harmonized_seurat$phenotype == "ICE" & harmonized_seurat@assays$RNA@counts["p23031-mCherry",] == 0, TRUE, FALSE) 
+harmonized_seurat$facsN_mChP_cells = ifelse(harmonized_seurat$phenotype == "wt" & harmonized_seurat@assays$RNA@counts["p23031-mCherry",] != 0, TRUE, FALSE) 
+
+saveRDS(harmonized_seurat, file.path(object_storage_path, "SO_integratedHarmony_alldatasetsTogether_organoids.RDS"))
+```
+
+## Diagnostic plots
+
+```{r, results="asis", warning=FALSE, fig.height=8, fig.width=8}
+df_proportions = harmonized_seurat@meta.data  %>%
+  dplyr::count(Protocol_maturation_stage, dataset, Celltype) %>%
+  group_by(Protocol_maturation_stage, dataset) %>%
+  mutate(percentage = (n / sum(n)) * 100) %>%
+  ungroup()
+
+CT_proportion_perDataset = ggplot(df_proportions, aes(x = Celltype, y = percentage, fill = dataset)) +
+  geom_col(position = position_dodge(preserve = "single"), color = "black") + 
+  theme_minimal() +
+  labs(title = "Celltype composition", y = "Percentage of Total Cells (%)", x = "Celltype") + 
+  scale_y_continuous(labels = function(x) paste0(x, "%")) + 
+  facet_wrap(~ Protocol_maturation_stage) + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 12)) 
+
+CT_proportion_perDataset
+
+DimPlot(harmonized_seurat, reduction = "umap", group.by = "phenotype")
+
+DimPlot(harmonized_seurat, reduction = "umap", group.by = "phenotype", cells = Cells(harmonized_seurat)[which(harmonized_seurat$timepoint == "4dpi")]) + ggtitle("phenotype 4dpi only")
+
+DimPlot(harmonized_seurat, reduction = "umap", group.by = "phenotype", cells = Cells(harmonized_seurat)[which(harmonized_seurat$timepoint == "4wpi")]) + ggtitle("phenotype 4wpi only (COp2 datasets only)")
+
+df_phenotype = harmonized_seurat@meta.data %>% dplyr::count(Celltype, phenotype) 
+df_protocol = harmonized_seurat@meta.data %>% dplyr::count(Celltype, Protocol)
+df_maturation = harmonized_seurat@meta.data %>% dplyr::count(Celltype, maturation_stage)
+
+# define theme
+theme_figure = function(show_x_text = TRUE) {
+  theme_minimal(base_size = 13) +
+    theme(
+      plot.title = element_text(size = 14, face = "bold", hjust = 0),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank(),
+      axis.text.x = if (show_x_text) element_text(angle = 45, hjust = 1, size = 10) else element_blank(),
+      axis.title.x = if (show_x_text) element_text(size = 10) else element_blank(),
+      axis.title.y = element_text(size = 10),
+      legend.title = element_text(size = 12, face = "bold"),
+      legend.text = element_text(size = 10),
+      legend.key.size = unit(0.4, "cm")
+    )
+}
+
+# Order clusters by total cell count (largest first) 
+cluster_order = df_proportions %>%
+  group_by(Celltype) %>%
+  summarise(total = sum(n)) %>%
+  arrange(desc(total)) %>%
+  pull(Celltype)
+
+p_phenotype = ggplot(df_phenotype, aes(x = factor(Celltype, levels = cluster_order), y = n, fill = phenotype)) +
+  geom_col(color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = c(ICE = "#D85A30", wt = "#1D9E75")) + # coral / teal
+  labs(title = "Phenotype", y = "Cell count", x = NULL, fill = "Phenotype") +
+  theme_figure(show_x_text = FALSE)
+
+p_protocol = ggplot(df_protocol, aes(x = factor(Celltype, levels = cluster_order), y = n, fill = Protocol)) +
+  geom_col(color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = c(COp1 = "#85B7EB", COp2 = "#185FA5")) + # light/dark blue
+  labs(title = "Protocol", y = "Cell count", x = NULL, fill = "Protocol") +
+  theme_figure(show_x_text = FALSE)
+
+p_maturation = ggplot(df_maturation, aes(x = factor(Celltype, levels = cluster_order), y = n, fill = maturation_stage)) +
+  geom_col(color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = c(`10w` = "#ED93B1", `4m` = "#993556")) + # light/dark pink
+  labs(title = "Maturation stage", y = "Cell count", x = "Cluster", fill = "Stage") +
+  theme_figure(show_x_text = TRUE)
+
+diagnostic_combined_plot = p_phenotype / p_protocol / p_maturation +
+  plot_layout(guides = "keep")
+
+diagnostic_combined_plot
+
+# ----------------------------------- # 
+#     Sorting Accuracy diagnostics
+# ----------------------------------- #
+df_proportions = harmonized_seurat@meta.data %>% dplyr::count(dataset, facsP_mChN_cells)
+
+ggplot(df_proportions, aes(x = dataset, y = n, fill = facsP_mChN_cells)) +
+  geom_col(width = 0.7, color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = c("FALSE" = "#7FB3D5", "TRUE" = "#E8927C"),
+                     labels = c("FALSE" = "mCh detected", "TRUE" = "mCh not-detected")) +
+  labs(
+    title = "FACS-positive cells: mCh transcript detection",
+    x = NULL, y = "Cell count", fill = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, margin = margin(b = 10)),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    axis.text.y = element_text(size = 11),
+    axis.title.y = element_text(size = 12, face = "bold", margin = margin(r = 10)),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.position = "right"
+  )
+
+df_proportions = harmonized_seurat@meta.data %>% dplyr::count(dataset, facsN_mChP_cells)
+ggplot(df_proportions, aes(dataset)) + geom_bar(aes(weight = n, fill = facsN_mChP_cells)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size = 10)) + 
+  ggtitle("amount of facs negative and mcherry positive per dataset") + xlab("cluster") 
+
+df_proportions_perCT = harmonized_seurat@meta.data %>% dplyr::count(Protocol_timepoint, Celltype, phenotype) %>%
+  group_by(Protocol_timepoint, Celltype) %>%
+  mutate(proportion = n / sum(n))
+
+ggplot(df_proportions_perCT, aes(x = Protocol_timepoint, y = proportion, fill = phenotype)) +
+  geom_col(width = 0.6, color = "white", linewidth = 0.3) +
+  scale_fill_manual(values = c("ICE" = "#E8927C", "wt" = "#7FB3D5")) +
+  facet_wrap(~ Celltype) +
+  labs(
+    title = "Proportion of ICE cells per celltype",
+    x = NULL, y = "Cell proportion", fill = "Phenotype"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, margin = margin(b = 10)),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12, face = "bold", margin = margin(r = 10)),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold", size = 10),
+    legend.title = element_text(size = 11, face = "bold"),
+    legend.text = element_text(size = 11)
+  )
+
+
+df_proportions = harmonized_seurat@meta.data %>% filter(Celltype == "Mitotic_cells") %>% dplyr::count(Protocol_maturation_stage, phenotype) %>%
+  group_by(Protocol_maturation_stage) %>%
+  mutate(proportion = n / sum(n))
+ggplot(df_proportions, aes(Protocol_maturation_stage)) + geom_bar(aes(weight = proportion, fill = phenotype)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size = 10))+ 
+  ggtitle("Proportion of cells in mitotic_cell cluster per dataset") + xlab("cluster") + ylab("Cell proportion")
+
+df_proportions = harmonized_seurat@meta.data %>% filter(Celltype == "Mitotic_cells") %>% dplyr::count(Protocol_timepoint, phenotype) %>%
+  group_by(Protocol_timepoint) %>%
+  mutate(proportion = n / sum(n))
+ggplot(df_proportions, aes(Protocol_timepoint)) + geom_bar(aes(weight = proportion, fill = phenotype)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size = 10)) + 
+  ggtitle("Proportion of cells in mitotic_cell cluster per dataset") + xlab("cluster") + ylab("Cell proportion")
+```
+:::
+
+# Figures publication
+
+```{r publication}
+publication_plots = list(
+  SOplot_dataset                         = list(plot = SOplot_dataset, width = 10, height = 8),
+  SOplot_celltypes                       = list(plot = SOplot_celltypes, width = 10, height = 8),
+  celltype_annotations                   = list(plot = celltype_annotations, width = 10, height = 10),
+  diagnostics_CT_proportion_perDataset   = list(plot = CT_proportion_perDataset, width = 12, height = 10),
+  diagnostics_counts_features            = list(plot = diagnostics_counts_features, width = 15, height = 15),
+  diagnostics_mt_rb_content_PerCelltype  = list(plot = diagnostics_mt_rb_content_PerCelltype, width = 20, height = 15),
+  diagnostic_combined_plot  = list(plot = diagnostic_combined_plot, width = 10, height = 12)
+  
+)
+
+for (plot_name in names(publication_plots)) {
+  cfg = publication_plots[[plot_name]]
+  ggsave(
+    filename = file.path(params$publication_plots_dir, paste0(plot_name, ".png")),
+    plot = cfg$plot, width = cfg$width, height = cfg$height, units = "in", device = "png"
+  )
+}
+```
+
+
+# sessioninfo
+
+```{r}
+sessionInfo()
+```

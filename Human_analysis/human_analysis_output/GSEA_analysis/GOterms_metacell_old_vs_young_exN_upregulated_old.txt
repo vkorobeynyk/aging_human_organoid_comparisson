@@ -1,0 +1,68 @@
+go cluster parent score size term parentTerm termUniqueness termUniquenessWithinCluster termDispensability
+GO:0007156 1 GO:0007156 3.96747027721585 168 homophilic cell adhesion via plasma membrane adhesion molecules homophilic cell adhesion via plasma membrane adhesion molecules 0.981910447761194 1 0
+GO:0046651 2 GO:0046651 3.32887700626119 307 lymphocyte proliferation lymphocyte proliferation 0.666671641791045 0.265588235294118 0
+GO:0032943 2 GO:0046651 2.86115650647578 314 mononuclear cell proliferation lymphocyte proliferation 0.808014925373134 0.265352941176471 0.995
+GO:0008285 2 GO:0046651 2.79347599054578 957 negative regulation of cell population proliferation lymphocyte proliferation 0.816358208955224 0.399235294117647 0.564
+GO:0070661 2 GO:0046651 2.64208810947448 350 leukocyte proliferation lymphocyte proliferation 0.808537313432836 0.267588235294118 0.986
+GO:0008544 3 GO:0008544 2.59218099981124 385 epidermis development epidermis development 0.902731343283582 0.420142857142857 0
+GO:0002252 4 GO:0002252 2.59218099981124 708 immune effector process immune effector process 0.805626865671642 0.346692307692308 0
+GO:0050670 2 GO:0046651 2.59218099981124 238 regulation of lymphocyte proliferation lymphocyte proliferation 0.645134328358209 0.246058823529412 0.967
+GO:0032944 2 GO:0046651 2.59218099981124 242 regulation of mononuclear cell proliferation lymphocyte proliferation 0.786985074626866 0.245941176470588 0.965
+GO:0045165 5 GO:0045165 2.47638134954005 286 cell fate commitment cell fate commitment 0.930149253731343 1 0
+GO:0043299 4 GO:0002252 2.29255832355937 81 leukocyte degranulation immune effector process 0.824686567164179 0.432769230769231 0.783
+GO:0048659 2 GO:0046651 2.28557639436487 175 smooth muscle cell proliferation lymphocyte proliferation 0.867149253731343 0.497 0.483
+GO:0033002 2 GO:0046651 2.2695878858917 247 muscle cell proliferation lymphocyte proliferation 0.864238805970149 0.486294117647059 0.499
+GO:0050778 4 GO:0002252 2.2695878858917 748 positive regulation of immune response immune effector process 0.759925373134328 0.458769230769231 0.584
+GO:0048660 2 GO:0046651 2.2695878858917 171 regulation of smooth muscle cell proliferation lymphocyte proliferation 0.838671641791045 0.446235294117647 0.482
+GO:0098773 3 GO:0008544 2.2695878858917 128 skin epidermis development epidermis development 0.898134328358209 0.410428571428571 0.892
+GO:0042098 2 GO:0046651 2.2695878858917 213 T cell proliferation lymphocyte proliferation 0.675537313432836 0.280941176470588 0.962
+GO:0051606 6 GO:0051606 2.24464907883076 675 detection of stimulus detection of stimulus 0.929671641791045 0.410666666666667 0
+GO:0009617 7 GO:0009617 2.23765432192678 739 response to bacterium response to bacterium 0.94444776119403 1 0
+GO:0007606 8 GO:0007606 2.22218705163376 533 sensory perception of chemical stimulus sensory perception of chemical stimulus 0.934865671641791 1 0
+GO:0070663 2 GO:0046651 2.19135985428026 267 regulation of leukocyte proliferation lymphocyte proliferation 0.787283582089552 0.247941176470588 0.955
+GO:0042044 9 GO:0042044 2.12387950731636 38 fluid transport fluid transport 0.99144776119403 1 0
+GO:0001906 10 GO:0001906 2.04504634094703 223 cell killing cell killing 0.96334328358209 0.380666666666667 0
+GO:0001909 10 GO:0001906 2.03026550435474 140 leukocyte mediated cytotoxicity cell killing 0.80210447761194 0.37 0.967
+GO:0002443 4 GO:0002252 1.96203867385441 466 leukocyte mediated immunity immune effector process 0.808776119402985 0.360923076923077 0.932
+GO:0061436 3 GO:0008544 1.94470227092817 33 establishment of skin barrier epidermis development 0.906865671641791 0.456571428571429 0.802
+GO:0002449 4 GO:0002252 1.76805953939688 368 lymphocyte mediated immunity immune effector process 0.811582089552239 0.371615384615385 0.912
+GO:0050673 2 GO:0046651 1.76602429552434 480 epithelial cell proliferation lymphocyte proliferation 0.865074626865672 0.490882352941176 0.534
+GO:0007602 6 GO:0051606 1.76602429552434 49 phototransduction detection of stimulus 0.90234328358209 0.472333333333333 0.8
+GO:0032945 2 GO:0046651 1.76602429552434 89 negative regulation of mononuclear cell proliferation lymphocyte proliferation 0.790462686567164 0.275647058823529 0.881
+GO:0050672 2 GO:0046651 1.76602429552434 88 negative regulation of lymphocyte proliferation lymphocyte proliferation 0.660567164179104 0.275588235294118 0.884
+GO:0006954 11 GO:0006954 1.75697380872333 886 inflammatory response inflammatory response 0.948238805970149 1 0
+GO:0051145 12 GO:0051145 1.74083484692864 76 smooth muscle cell differentiation smooth muscle cell differentiation 0.91489552238806 0.48375 0
+GO:0030855 3 GO:0008544 1.74083484692864 741 epithelial cell differentiation epidermis development 0.885417910447761 0.427571428571429 0.638
+GO:0042129 2 GO:0046651 1.74083484692864 182 regulation of T cell proliferation lymphocyte proliferation 0.652567164179104 0.257941176470588 0.941
+GO:0048525 13 GO:0048525 1.72673496935919 93 negative regulation of viral process negative regulation of viral process 0.949029850746269 0.5205 0
+GO:0060415 12 GO:0051145 1.70563450422849 74 muscle tissue morphogenesis smooth muscle cell differentiation 0.887089552238806 0.4225 0.658
+GO:0048644 12 GO:0051145 1.70563450422849 81 muscle organ morphogenesis smooth muscle cell differentiation 0.907014925373134 0.421 0.661
+GO:0050678 2 GO:0046651 1.67044993149243 407 regulation of epithelial cell proliferation lymphocyte proliferation 0.837298507462687 0.446941176470588 0.52
+GO:0007178 14 GO:0007178 1.63791001734501 410 transmembrane receptor protein serine/threonine kinase signaling pathway transmembrane receptor protein serine/threonine kinase signaling pathway 0.896462686567164 0.58 0
+GO:0048729 3 GO:0008544 1.62470236233124 631 tissue morphogenesis epidermis development 0.897194029850746 0.490142857142857 0.645
+GO:0051216 3 GO:0008544 1.61310555962271 207 cartilage development epidermis development 0.868 0.535714285714286 0.57
+GO:0002250 4 GO:0002252 1.61310555962271 760 adaptive immune response immune effector process 0.80765671641791 0.500461538461539 0.563
+GO:0051149 12 GO:0051145 1.61310555962271 83 positive regulation of muscle cell differentiation smooth muscle cell differentiation 0.877716417910448 0.48375 0.746
+GO:0045576 4 GO:0002252 1.5907713500909 69 mast cell activation immune effector process 0.80244776119403 0.452846153846154 0.45
+GO:0060391 14 GO:0007178 1.57613805121201 26 positive regulation of SMAD protein signal transduction transmembrane receptor protein serine/threonine kinase signaling pathway 0.902313432835821 0.54975 0.763
+GO:0003007 15 GO:0003007 1.51419735627952 264 heart morphogenesis heart morphogenesis 0.867149253731343 0.572 0
+GO:0070848 16 GO:0070848 1.51419735627952 761 response to growth factor response to growth factor 0.937 0.506 0
+GO:0042130 2 GO:0046651 1.51419735627952 72 negative regulation of T cell proliferation lymphocyte proliferation 0.655626865671642 0.281294117647059 0.867
+GO:0030858 3 GO:0008544 1.50471973039188 72 positive regulation of epithelial cell differentiation epidermis development 0.824597014925373 0.514 0.512
+GO:0002768 4 GO:0002252 1.49060770867733 346 immune response-regulating cell surface receptor signaling pathway immune effector process 0.767985074626866 0.498923076923077 0.528
+GO:0002274 4 GO:0002252 1.49060770867733 241 myeloid leukocyte activation immune effector process 0.788313432835821 0.431076923076923 0.506
+GO:0043303 4 GO:0002252 1.49060770867733 54 mast cell degranulation immune effector process 0.732253731343284 0.274846153846154 0.753
+GO:0071363 16 GO:0070848 1.44831610313071 730 cellular response to growth factor stimulus response to growth factor 0.937149253731343 0.506 0.988
+GO:0019221 14 GO:0007178 1.36545926140461 513 cytokine-mediated signaling pathway transmembrane receptor protein serine/threonine kinase signaling pathway 0.90089552238806 0.659 0.583
+GO:0007507 15 GO:0003007 1.36545926140461 617 heart development heart morphogenesis 0.868268656716418 0.560333333333333 0.897
+GO:0002275 4 GO:0002252 1.36545926140461 98 myeloid cell activation involved in immune response immune effector process 0.737761194029851 0.302461538461538 0.799
+GO:0045104 18 GO:0045104 1.34885253754476 94 intermediate filament cytoskeleton organization intermediate filament cytoskeleton organization 0.991283582089552 1 0
+GO:0042759 17 GO:0042759 1.34885253754476 28 long-chain fatty acid biosynthetic process long-chain fatty acid biosynthetic process 0.985507462686567 0.785 0
+GO:0051897 14 GO:0007178 1.34885253754476 171 positive regulation of phosphatidylinositol 3-kinase/protein kinase B signal transduction transmembrane receptor protein serine/threonine kinase signaling pathway 0.901716417910448 0.68475 0.334
+GO:0002279 4 GO:0002252 1.34885253754476 56 mast cell activation involved in immune response immune effector process 0.745537313432836 0.312 0.757
+GO:0050906 6 GO:0051606 1.34836368386472 546 detection of stimulus involved in sensory perception detection of stimulus 0.874089552238806 0.416333333333333 0.968
+GO:0042359 17 GO:0042759 1.34489258278643 20 vitamin D metabolic process long-chain fatty acid biosynthetic process 0.993582089552239 0.785 0.43
+GO:0060541 15 GO:0003007 1.34489258278643 214 respiratory system development heart morphogenesis 0.89910447761194 0.730333333333333 0.387
+GO:0045071 13 GO:0048525 1.34489258278643 55 negative regulation of viral genome replication negative regulation of viral process 0.950582089552239 0.5205 0.959
+GO:0001913 10 GO:0001906 1.34489258278643 60 T cell mediated cytotoxicity cell killing 0.78155223880597 0.395333333333333 0.891
+GO:0002697 4 GO:0002252 1.34355485222065 389 regulation of immune effector process immune effector process 0.782029850746269 0.354461538461538 0.926

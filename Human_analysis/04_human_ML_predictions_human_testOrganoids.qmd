@@ -1,0 +1,450 @@
+---
+title: "ICE Annina 10x sequencing analysis - ML predictions of human/organoid cross-dataset comparisson"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  metacell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
+  dea_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results"
+  human_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/glmnet_human_output"
+  organoid_metacell_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
+  organoid_dea_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
+  organoid_output_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
+  ineurons_path: "/home/vkorob/data/ICE_Annina/edgeR_dge_induced_Neurons.rds"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  min_gene_count: 10
+  min_fraction_metacells_expressing: 0.05
+  dea_padj_threshold: 0.05
+---
+
+::: callout-note
+In this script we are modelling patient's Age for the human data, and cross-testing them against the organoid data and iNeuron (and vice versa).
+
+**What this script does:** trains glmnet models in both directions between the human
+and organoid metacell data and evaluates cross-dataset generalization: (1) train a
+gaussian Age-predictor on human metacells, test it on each organoid dataset/timepoint
+(COp1 10w, COp1 4m, COp2 4dpi, COp2 4wpi, for both IN and EN); (2) train a binomial
+WT-vs-ICE classifier on organoid metacells (using genes selected from the organoid
+DEA results), test it on human metacells to see if the phenotype score tracks
+chronological age; (3) train a gaussian Age-predictor on human metacells and test it
+on an external induced-neuron ("iNeurons") dataset. All models are trained once per
+dataset combination (not repeated across seeds, unlike `03_human_ML_predictions_human.qmd`)
+since the goal here is cross-dataset generalization, not within-dataset variability.
+:::
+
+# Setup
+
+```{r setup, tags=c(), warning=FALSE, message=FALSE}
+options(future.globals.maxSize = 8000 * 1024^2)
+suppressMessages({
+  library(scater)
+  library(dplyr)
+  library(purrr)
+  library(parallel)
+  library(ggpubr)
+  library(ggplot2)
+  library(stringr)
+  library(magrittr)
+  library(SingleCellExperiment)
+  library(glmnet)
+  library(knitr)
+  library(DT)
+  library(ggsignif)
+})
+source(params$helper_functions_path)
+dir.create(params$human_output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(params$organoid_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+set.seed(1)
+```
+
+# Load data
+
+```{r load_data_human}
+# -----#
+# IN
+# -----#
+metacell_human_IN = readRDS(file.path(params$metacell_dir, "metacell_sce_IN_human.RDS"))
+metadata_metacell_IN = colData(metacell_human_IN)
+DEA_metacell_IN = read.csv(file.path(params$dea_dir, "DEA_metacell_iN_old_vs_young.csv"), row.names = 1)
+
+# make sure none of the genes is constantly 0
+keep = which(rowSums(logcounts(metacell_human_IN)) > 0) %>% names
+metacell_human_IN = metacell_human_IN[keep, ]
+
+# -----#
+# EN
+# -----#
+metacell_human_EN = readRDS(file.path(params$metacell_dir, "metacell_sce_EN_human.RDS"))
+metadata_metacell_human_EN = colData(metacell_human_EN)
+DEA_metacell_EN = read.csv(file.path(params$dea_dir, "DEA_metacell_exN_old_vs_young.csv"), row.names = 1)
+
+# make sure none of the genes is constantly 0
+keep = which(rowSums(logcounts(metacell_human_EN)) > 0) %>% names
+metacell_human_EN = metacell_human_EN[keep, ]
+```
+
+# Helper functions for this script
+
+```{r ml-helper-functions, warning=FALSE, message=FALSE}
+#' Keep genes with count >= min_count in at least min_fraction_metacells of metacells
+filter_genes_min_expression = function(sce, min_count = params$min_gene_count,
+                                        min_fraction_metacells = params$min_fraction_metacells_expressing) {
+  keep = rowSums(counts(sce) >= min_count) >= (min_fraction_metacells * ncol(sce))
+  sce[keep, ]
+}
+
+#' Restrict two SCEs to their shared genes (order-independent, returns both)
+restrict_to_common_genes = function(sce_a, sce_b) {
+  common_genes = intersect(rownames(sce_a), rownames(sce_b))
+  list(a = sce_a[common_genes, ], b = sce_b[common_genes, ])
+}
+
+#' Train a gaussian Age-predictor on human metacells, test on an organoid metacell dataset
+#'
+#' @param human_sce human metacell SingleCellExperiment (used as-is; not modified in place)
+#' @param organoid_rds_path path to the organoid metacell .RDS
+#' @param nested_sce TRUE if the RDS stores the SCE under a $sce element (as COp2 files do)
+#'   rather than being the SCE itself (as COp1 files are)
+#' @param label short label for this comparison, e.g. "IN_10w"
+#' @return data.frame of predictions on the organoid data
+train_human_test_organoid = function(human_sce, organoid_rds_path, nested_sce, label) {
+
+  human_train = filter_genes_min_expression(human_sce)
+
+  organoid = readRDS(organoid_rds_path)
+  if (nested_sce) organoid = organoid$sce
+
+  restricted = restrict_to_common_genes(human_train, organoid)
+  human_train = restricted$a
+  organoid = restricted$b
+
+  scaled_counts_human = as.data.frame(scale(t(logcounts(human_train))))
+  scaled_counts_organoid = as.data.frame(scale(t(logcounts(organoid))))
+
+  data = scaled_counts_human
+  data$label = human_train$Age
+
+  # train model with gaussian family on all human data; n_times not used here (single fixed model)
+  out = train_glmnet_model(df = data, model_family = "gaussian", n_times = 1, test = FALSE)
+
+  preds = predict(out$cvfit, newx = as.matrix(scaled_counts_organoid), s = "lambda.min", type = "response")
+
+  preds_df = data.frame(
+    predictions_organoids = as.vector(preds),
+    true_organoid_age = organoid$phenotype,
+    datasets_predicted = label,
+    dataset = organoid$dataset
+  )
+
+  print(
+    ggplot(preds_df, aes(x = true_organoid_age, y = predictions_organoids, fill = dataset)) +
+      geom_boxplot(color = "skyblue") +
+      labs(y = "Predicted Age", x = "True Age") +
+      theme_bw()
+  )
+
+  preds_df
+}
+
+#' Train a binomial WT-vs-ICE classifier on organoid metacells (genes selected from the
+#' organoid DEA), test on human metacells
+#'
+#' @param organoid_rds_path path to the organoid metacell .RDS (COp1 files, not nested)
+#' @param organoid_dea_csv_path path to the organoid ICE-vs-wt DEA results, used to select
+#'   which genes go into the model (padj < params$dea_padj_threshold, excluding the mCherry gene)
+#' @param human_sce human metacell SingleCellExperiment (used as-is; not modified in place)
+#' @param label short label for this comparison, e.g. "IN_human_10w"
+#' @return data.frame of predictions on the human data
+train_organoid_test_human = function(organoid_rds_path, organoid_dea_csv_path, human_sce, label) {
+
+  genenames_model = read.csv(organoid_dea_csv_path, row.names = 1) %>%
+    filter(padj < params$dea_padj_threshold, gene != "p23031-mCherry") %>%
+    pull(gene) %>%
+    unique()
+
+  organoid = readRDS(organoid_rds_path)
+  organoid_train = organoid[rownames(organoid) %in% genenames_model, ]
+
+  restricted = restrict_to_common_genes(organoid_train, human_sce)
+  organoid_train = restricted$a
+  human_local = restricted$b
+
+  scaled_counts_organoid = as.data.frame(scale(t(logcounts(organoid_train))))
+  scaled_counts_human = as.data.frame(scale(t(logcounts(human_local))))
+
+  data = scaled_counts_organoid
+  data$label = organoid_train$phenotype
+
+  # train model with binomial family on all organoid data; n_times not used here (single fixed model)
+  out = train_glmnet_model(df = data, model_family = "binomial", n_times = 1, test = FALSE)
+
+  preds = predict(out$cvfit, newx = as.matrix(scaled_counts_human), s = "lambda.min", type = "response")
+
+  preds_df = data.frame(
+    predictions_human = as.vector(preds),
+    true_human_age = human_local$Age,
+    datasets_predicted = label,
+    Diagnosis = human_local$Diagnosis,
+    Sex = human_local$Sex,
+    Sample_Source = human_local$Sample_Source
+  )
+
+  for (covariate in c("Diagnosis", "Sex", "Sample_Source")) {
+    print(
+      ggplot(preds_df, aes(x = true_human_age, y = predictions_human, color = .data[[covariate]])) +
+        geom_point(alpha = 0.3) +
+        geom_smooth(se = FALSE) +
+        facet_wrap(vars(.data[[covariate]])) +
+        theme_light() +
+        ylab("Prediction probability for wt (young organoid)")
+    )
+  }
+
+  preds_df
+}
+
+#' Train a gaussian Age-predictor on human metacells, test on the external iNeurons dataset
+#'
+#' @param human_sce human metacell SingleCellExperiment (used as-is; not modified in place)
+#' @param ineurons_rds_path path to the iNeurons edgeR object (its $sg element is used)
+#' @param label short label used in the plot title, e.g. "EN" or "IN"
+#' @return data.frame of predictions on the iNeurons data
+train_human_test_iNeurons = function(human_sce, ineurons_rds_path, label) {
+
+  human_train = filter_genes_min_expression(human_sce)
+
+  iNeurons = readRDS(ineurons_rds_path)$sg
+
+  # restrict to the age range covered by the human training data
+  iNeurons = iNeurons[, iNeurons$age > min(human_train$Age) & iNeurons$age < max(human_train$Age)]
+
+  # remove genes with missing/duplicated symbols, and genes with 0 counts across all samples
+  iNeurons = iNeurons[!is.na(rowData(iNeurons)$symbol) & !duplicated(rowData(iNeurons)$symbol)]
+  iNeurons = iNeurons[rowSums(assay(iNeurons, "counts")) > 0, ]
+  rownames(iNeurons) = rowData(iNeurons)$symbol
+
+  restricted = restrict_to_common_genes(human_train, iNeurons)
+  human_train = restricted$a
+  iNeurons = restricted$b
+
+  scaled_counts_human = as.data.frame(scale(t(logcounts(human_train))))
+  scaled_counts_iNeurons = as.data.frame(scale(t(assay(iNeurons, "logcpm"))))
+
+  data = scaled_counts_human
+  data$label = human_train$Age
+
+  # train model with gaussian family on all human data; n_times not used here (single fixed model)
+  out = train_glmnet_model(df = data, model_family = "gaussian", n_times = 1, test = FALSE)
+
+  preds = predict(out$cvfit, newx = as.matrix(scaled_counts_iNeurons), s = "lambda.min", type = "response")
+
+  preds_df = data.frame(
+    predictions_iNeurons = as.vector(preds),
+    true_organoid_age = iNeurons$age,
+    dataset = iNeurons$condition
+  )
+
+  print(
+    ggplot(preds_df, aes(x = true_organoid_age, y = predictions_iNeurons)) +
+      geom_point(color = "skyblue") +
+      geom_smooth(method = "lm", color = "black", linetype = "dashed") +
+      labs(y = "Predicted Age", x = "True Age") +
+      stat_regline_equation(aes(label = ..rr.label..), show.legend = FALSE) +
+      ggtitle(paste0("Predicted vs chronological Age per iNeuron batch | ", label)) +
+      theme_bw()
+  )
+
+  preds_df
+}
+```
+
+# Train human data | test organoids
+
+::: panel-tabset
+```{r train_human_test_organoids, results='asis', warning=FALSE, message=FALSE, fig.width=8, fig.height=10}
+organoid_datasets_for_human_train = list(
+  list(celltype = "IN", suffix = "COp1_10w",      rds = "metacell_sce_IN_organoids_COp1_10w.RDS",  nested = FALSE),
+  list(celltype = "EN", suffix = "COp1_10w",      rds = "metacell_sce_EN_organoids_COp1_10w.RDS",  nested = FALSE),
+  list(celltype = "IN", suffix = "COp1_4m",       rds = "metacell_sce_IN_organoids_COp1_4m.RDS",   nested = FALSE),
+  list(celltype = "EN", suffix = "COp1_4m",       rds = "metacell_sce_EN_organoids_COp1_4m.RDS",   nested = FALSE),
+  list(celltype = "EN", suffix = "COp2_4dpi", rds = "metacell_sce_EN_organoids_COp2_4dpi.RDS", nested = TRUE),
+  list(celltype = "IN", suffix = "COp2_4dpi", rds = "metacell_sce_IN_organoids_COp2_4dpi.RDS", nested = TRUE),
+  list(celltype = "EN", suffix = "COp2_4wpi", rds = "metacell_sce_EN_organoids_COp2_4wpi.RDS", nested = TRUE),
+  list(celltype = "IN", suffix = "COp2_4wpi", rds = "metacell_sce_IN_organoids_COp2_4wpi.RDS", nested = TRUE)
+)
+
+preds_organoids = list()
+
+for (cfg in organoid_datasets_for_human_train) {
+  label = paste0(cfg$celltype, "_", cfg$suffix)
+  cat("## ", label, "\n\n")
+
+  human_sce = if (cfg$celltype == "IN") metacell_human_IN else metacell_human_EN
+
+  preds_organoids[[label]] = train_human_test_organoid(
+    human_sce = human_sce,
+    organoid_rds_path = file.path(params$organoid_metacell_dir, cfg$rds),
+    nested_sce = cfg$nested,
+    label = label
+  )
+
+  cat("\n\n")
+}
+```
+:::
+
+# Prediction summary (human -> organoids)
+
+```{r plot_Organoid_predictions, warning=FALSE, message=FALSE, fig.width=10, fig.height=10}
+df = do.call(rbind, preds_organoids)
+
+# Standardize within each dataset
+df = df %>%
+  group_by(datasets_predicted) %>%
+  mutate(predictions_organoids_z = as.numeric(scale(predictions_organoids))) %>%
+  ungroup()
+
+write.table(df, file.path(params$organoid_output_dir, "prediction_summary_trainHuman_testOrganoids.txt"))
+
+# Ensure consistent dataset ordering between the test results and the main plot
+dataset_levels = df %>% distinct(datasets_predicted) %>% arrange(datasets_predicted) %>% pull(datasets_predicted)
+df$datasets_predicted = factor(df$datasets_predicted, levels = dataset_levels)
+
+# Wilcoxon test: ICE vs wt, on the RAW (non-z-scored) predicted age, per dataset
+sig_results = df %>%
+  dplyr::group_by(datasets_predicted) %>%
+  dplyr::summarise(
+    p_value = wilcox.test(predictions_organoids ~ true_organoid_age)$p.value,
+    max_z = max(predictions_organoids_z, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    p_label = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE ~ "ns"
+    ),
+    x_numeric = as.numeric(datasets_predicted),
+    xmin = x_numeric - 0.2,
+    xmax = x_numeric + 0.2,
+    xmid = x_numeric,
+    y_bracket = max_z + 0.3,
+    y_text = max_z + 0.55
+  )
+
+ggplot(df, aes(x = datasets_predicted, y = predictions_organoids_z, fill = true_organoid_age)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray70", linewidth = 0.4) +
+  geom_boxplot(width = 0.6, outlier.size = 1, outlier.alpha = 0.5, linewidth = 0.4, color = "gray30") +
+  geom_segment(data = sig_results, aes(x = xmin, xend = xmax, y = y_bracket, yend = y_bracket), inherit.aes = FALSE, linewidth = 0.4) +
+  geom_text(data = sig_results, aes(x = xmid, y = y_text, label = p_label), inherit.aes = FALSE, size = 4.5, fontface = "bold") +
+  scale_fill_manual(values = c(ICE = "#D85A30", wt = "#1D9E75")) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+  labs(
+    title = "Human-trained age model applied to organoid data",
+    x = "Organoid dataset",
+    y = "Predicted age (z-scored within dataset)",
+    fill = "Phenotype"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 13),
+    axis.text.y = element_text(size = 13),
+    axis.title = element_text(size = 15),
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 13),
+    legend.position = "right"
+  )
+```
+
+# Train organoid data | test human
+
+::: panel-tabset
+```{r train_organoid_test_human, results='asis', warning=FALSE, message=FALSE, fig.width=10, fig.height=10}
+organoid_datasets_for_human_test = list(
+  list(celltype = "IN", suffix = "10w", label = "COp1_IN_10w",
+       organoid_rds = "metacell_sce_IN_organoids_COp1_10w.RDS",
+       dea_csv = "DEA_metacell_ICE_vs_wt_iN_COp1_10w_organoids.csv"),
+  list(celltype = "EN", suffix = "10w", label = "COp1_EN_10w",
+       organoid_rds = "metacell_sce_EN_organoids_COp1_10w.RDS",
+       dea_csv = "DEA_metacell_ICE_vs_wt_exN_COp1_10w_organoids.csv"),
+  list(celltype = "IN", suffix = "4m", label = "COp1_IN_4m",
+       organoid_rds = "metacell_sce_IN_organoids_COp1_4m.RDS",
+       dea_csv = "DEA_metacell_ICE_vs_wt_iN_COp1_4m_organoids.csv"),
+  list(celltype = "EN", suffix = "4m", label = "COp1_EN_4m",
+       organoid_rds = "metacell_sce_EN_organoids_COp1_4m.RDS",
+       dea_csv = "DEA_metacell_ICE_vs_wt_exN_COp1_4m_organoids.csv")
+)
+
+preds_human = list()
+
+for (cfg in organoid_datasets_for_human_test) {
+  cat("## ", cfg$label, "\n\n")
+
+  human_sce = if (cfg$celltype == "IN") metacell_human_IN else metacell_human_EN
+
+  preds_human[[cfg$label]] = train_organoid_test_human(
+    organoid_rds_path = file.path(params$organoid_metacell_dir, cfg$organoid_rds),
+    organoid_dea_csv_path = file.path(params$organoid_dea_dir, cfg$dea_csv),
+    human_sce = human_sce,
+    label = cfg$label
+  )
+
+  cat("\n\n")
+}
+```
+:::
+
+# Prediction summary (organoids -> human)
+
+```{r plot_Organoid_predictions_trainO_testH, warning=FALSE, message=FALSE, fig.width=10, fig.height=10}
+df = do.call(rbind, preds_human)
+
+write.table(df, file.path(params$human_output_dir, "prediction_summary_trainOrganoid_testHuman.txt"))
+
+ggplot(df, aes(x = true_human_age, y = predictions_human, color = datasets_predicted)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(se = FALSE) +
+  facet_wrap(~datasets_predicted) +
+  theme_light() +
+  ylab("Prediction probability for wt (young organoid)")
+```
+
+# Train human data | test iNeurons
+
+::: panel-tabset
+## EN
+
+```{r modelling_sampleLevel_EN_generalizability_test_iNeurons, warning=FALSE, message=FALSE, fig.width=8, fig.height=10}
+preds_iNeurons_EN = train_human_test_iNeurons(
+  human_sce = metacell_human_EN, ineurons_rds_path = params$ineurons_path, label = "EN"
+)
+```
+
+## IN
+
+```{r modelling_sampleLevel_IN_generalizability_test_iNeurons, warning=FALSE, message=FALSE, fig.width=8, fig.height=10}
+preds_iNeurons_IN = train_human_test_iNeurons(
+  human_sce = metacell_human_IN, ineurons_rds_path = params$ineurons_path, label = "IN"
+)
+```
+:::
+
+# sessioninfo
+
+```{r}
+sessionInfo()
+```

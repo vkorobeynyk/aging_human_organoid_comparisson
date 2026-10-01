@@ -1,0 +1,612 @@
+---
+title: "ICE Annina 10x sequencing analysis - Analysis of organoid data"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  object_storage_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
+  dea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/singlecell"
+  gsea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/GSEA_results/singlecell"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  gsea_perCelltype_rds_dir: "/home/vkorob/data/ICE_Annina"
+  gsea_n_pathways: 150
+---
+
+::: callout-note
+**What this script does:** runs single-cell-level (as opposed to metacell-level)
+differential expression (Seurat `FindMarkers`, Wilcoxon test) and GSEA (GO Biological
+Process) across several comparisons: ICE vs wt at COp1 10w and COp1 4m (both across all
+celltypes together and per celltype), and a set of COp2 comparisons at 4dpi/4wpi
+(timepoint effects, phenotype effects within each timepoint, and their per-celltype
+breakdowns). Results (DEA tables, GSEA up/down GO-term tables, and treemap plots) are
+saved for each comparison.
+:::
+
+# libraries
+
+```{r libs, warning=FALSE, message=FALSE}
+options(scipen = 1, digits = 3) # set to 3 decimal places
+set.seed(1)
+
+suppressMessages({
+  library(dplyr)
+  library(Seurat)
+  library(edgeR)
+  library(harmony)
+  library(stringr)
+  library(stringi)
+  library(genekitr)
+  library(ggplot2)
+  library(geneset)
+  library(scater)
+  library(magrittr)
+  library(SingleCellExperiment)
+  library(DT)
+  library(EnhancedVolcano)
+  library(cluster)
+  library(DESeq2)
+  library(pheatmap)
+  library(rrvgo)
+  library(tidyr)
+  library(openxlsx)
+  library(ggpubr)
+  library(patchwork)
+  import::from(clusterProfiler, GSEA)
+})
+source(params$qc_pipeline_functions_path)
+source(params$helper_functions_path)
+
+object_storage_path = params$object_storage_path
+DEA_results_path = params$dea_results_path
+gsea_results_path = params$gsea_results_path
+dir.create(DEA_results_path, recursive = TRUE, showWarnings = FALSE)
+dir.create(gsea_results_path, recursive = TRUE, showWarnings = FALSE)
+
+# for GSEA
+gs = geneset::getGO(org = "human", ont = "bp")
+n_pathways_toShow = params$gsea_n_pathways
+```
+
+# Load object
+
+```{r load object, warning=FALSE, message=FALSE}
+harmonized_seurat = readRDS(file.path(object_storage_path , "SO_integratedHarmony_alldatasetsTogether_organoids.RDS"))
+harmonized_seurat_COp1_10w = subset(harmonized_seurat, Protocol_maturation_stage == "COp1_10w")
+harmonized_seurat_COp1_4m = subset(harmonized_seurat, Protocol_maturation_stage == "COp1_4m")
+harmonized_seurat_COp2_4dpi_4wpi = subset(harmonized_seurat, Protocol == "COp2")
+```
+
+# Helper functions for this script
+
+```{r de-gsea-helper-functions, warning=FALSE, message=FALSE}
+#' Run FindMarkers across all celltypes together, save the DEA table, and plot a volcano
+run_de_allCT = function(SO, group_by, ident1, ident2, dea_csv_path, remove_MT_before_volcano = FALSE) {
+  markers = FindMarkers(object = SO, assay = "RNA", test.use = "wilcox", group.by = group_by,
+                         ident.1 = ident1, ident.2 = ident2) %>%
+    mutate(gene = rownames(.),
+           across(.cols = c("p_val", "avg_log2FC", "p_val_adj"), .fns = ~ as.numeric(format(., 3))))
+
+  write.csv(markers, dea_csv_path)
+
+  markers_for_plot = markers
+  if (remove_MT_before_volcano) {
+    markers_for_plot = markers_for_plot[!grepl("^MT-", rownames(markers_for_plot)), ]
+  }
+  print(EnhancedVolcano(markers_for_plot, rownames(markers_for_plot), x = "avg_log2FC", y = "p_val_adj"))
+
+  markers
+}
+
+#' Run GSEA on an all-celltypes-together DEA result, save up/down GO-term tables, plot treemap
+run_gsea_allCT = function(markers, gs, n_pathways, treemap_title, up_xlsx_path, down_xlsx_path) {
+  gsea = gsea_analysis(markers = markers, cluster = treemap_title, gs = gs, n_pathways = n_pathways, plot_type = "none")
+  lst = plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = treemap_title)
+  write.xlsx(lst$neg, file = down_xlsx_path)
+  write.xlsx(lst$pos, file = up_xlsx_path)
+}
+
+#' Convenience wrapper: DE across all celltypes together, then GSEA on the result
+run_de_gsea_allCT = function(SO, group_by, ident1, ident2, dea_csv_path, gs, n_pathways,
+                              treemap_title, up_xlsx_path, down_xlsx_path, remove_MT_before_volcano = FALSE) {
+  markers = run_de_allCT(SO, group_by, ident1, ident2, dea_csv_path, remove_MT_before_volcano)
+  run_gsea_allCT(markers, gs, n_pathways, treemap_title, up_xlsx_path, down_xlsx_path)
+  markers
+}
+
+#' Run FindMarkers per celltype, save a volcano plot for each, and collect the results
+#' @param ident1_fn, ident2_fn functions(cluster) -> identity string for FindMarkers ident.1/ident.2
+#' @param comparison_label_fn function(cluster) -> string stored in the 'comparison' column
+run_de_perCT_volcano = function(SO, celltypes, group_by, ident1_fn, ident2_fn, comparison_label_fn,
+                                 extra_findmarkers_args = list()) {
+  dea_perCT = list()
+  for (cluster in celltypes) {
+    fm_args = c(
+      list(object = SO, assay = "RNA", test.use = "wilcox", group.by = group_by,
+           ident.1 = ident1_fn(cluster), ident.2 = ident2_fn(cluster)),
+      extra_findmarkers_args
+    )
+    markers = do.call(FindMarkers, fm_args) %>%
+      mutate(gene = rownames(.),
+             across(.cols = c("p_val", "avg_log2FC", "p_val_adj"), .fns = ~ as.numeric(format(., 3))),
+             comparison = comparison_label_fn(cluster))
+
+    dea_perCT[[paste0("cluster_", cluster)]] = markers
+    print(EnhancedVolcano(markers, markers$gene, x = "avg_log2FC", y = "p_val_adj", title = cluster))
+  }
+  dea_perCT
+}
+
+#' Run FindMarkers + GSEA per celltype for one comparison (used for the COp2 comparisons,
+#' which do DE and GSEA together in a single per-celltype loop)
+#' @param treemap_title_fn function(cluster) -> title for the GSEA treemap
+#' @return list(dea = named list of per-cluster markers, gsea = named list of per-cluster {neg, pos})
+run_de_gsea_perCT = function(SO, celltypes, group_by, ident1_fn, ident2_fn, comparison_label_fn,
+                              treemap_title_fn, gs, n_pathways, extra_findmarkers_args = list()) {
+  dea_perCT = list()
+  gsea_perCT = list()
+
+  for (cluster in celltypes) {
+    fm_args = c(
+      list(object = SO, assay = "RNA", test.use = "wilcox", group.by = group_by,
+           ident.1 = ident1_fn(cluster), ident.2 = ident2_fn(cluster)),
+      extra_findmarkers_args
+    )
+    markers = do.call(FindMarkers, fm_args) %>%
+      mutate(gene = rownames(.),
+             across(.cols = c("p_val", "avg_log2FC", "p_val_adj"), .fns = ~ as.numeric(format(., 3))),
+             comparison = comparison_label_fn(cluster))
+
+    dea_perCT[[paste0("cluster_", cluster)]] = markers
+
+    gsea = gsea_analysis(markers = markers, cluster = cluster, gs = gs, n_pathways = n_pathways, plot_type = "none")
+
+    if (length(gsea) == 1) { # gsea_analysis returns a bare 0 (length 1) when nothing enriched
+      message(cluster, " has no enriched GOterms")
+    } else {
+      lst = plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = treemap_title_fn(cluster))
+      gsea_perCT[[cluster]] = lst
+    }
+  }
+
+  list(dea = dea_perCT, gsea = gsea_perCT)
+}
+
+#' Save the neg/pos GO-term tables from a run_de_gsea_perCT() $gsea result to xlsx
+save_gsea_perCT_xlsx = function(gsea_perCT, down_xlsx_path, up_xlsx_path) {
+  write.xlsx(lapply(gsea_perCT, function(x) x$neg), file = down_xlsx_path)
+  write.xlsx(lapply(gsea_perCT, function(x) x$pos), file = up_xlsx_path)
+}
+
+#' Run GSEA per celltype for the COp1 ICE-vs-wt comparison, printing a text label + treemap
+#' for each celltype then save the RDS + up/down xlsx tables across all celltypes.
+run_gsea_perCT_COp1 = function(dea_perCT_list, celltypes, gs, n_pathways, maturation_stage_label,
+                              rds_output_path, up_xlsx_path, down_xlsx_path) {
+  gsea_perCelltype = list()
+
+  for (cluster in celltypes) {
+    cat("\n\n", cluster, "\n\n")
+
+    markers = dea_perCT_list[[paste0("cluster_", cluster)]]
+    gsea = gsea_analysis(markers = markers, cluster = cluster, gs = gs, n_pathways = n_pathways, plot_type = "none")
+
+    if (length(gsea) == 1) {
+      message(cluster, " has no enriched GOterms")
+      gsea_perCelltype[[cluster]] = list()
+    } else {
+      lst = plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = paste0(cluster, " - COp1 ", maturation_stage_label, " ICE vs wt"))
+      gsea_perCelltype[[cluster]] = lst
+    }
+  }
+
+  saveRDS(gsea_perCelltype, rds_output_path)
+  write.xlsx(lapply(gsea_perCelltype, function(x) x$neg), file = down_xlsx_path)
+  write.xlsx(lapply(gsea_perCelltype, function(x) x$pos), file = up_xlsx_path)
+
+  gsea_perCelltype
+}
+
+#' Build the "number of GO terms per celltype, up vs down" bar plot for one maturation stage
+build_goterm_count_plot = function(gsea_perCelltype, maturation_stage_label) {
+  df_neg = lapply(names(gsea_perCelltype), function(x) {
+    if (is.null(gsea_perCelltype[[x]]$neg)) return(list())
+    gsea_perCelltype[[x]]$neg %>% mutate(Celltype = x, direction = "downregulated_with_age")
+  }) %>% do.call(rbind, .)
+
+  df_pos = lapply(names(gsea_perCelltype), function(x) {
+    if (is.null(gsea_perCelltype[[x]]$pos)) return(list())
+    gsea_perCelltype[[x]]$pos %>% mutate(Celltype = x, direction = "upregulated_with_age")
+  }) %>% do.call(rbind, .)
+
+  df = rbind(df_neg, df_pos)
+  df$maturation_stage = maturation_stage_label
+
+  counts = df %>% group_by(Celltype, direction) %>% summarise(n = n(), .groups = "drop")
+
+  ggplot(counts, aes(x = Celltype, y = n, fill = direction)) +
+    geom_col(position = "dodge") +
+    scale_fill_manual(values = c("downregulated_with_age" = "#E41A1C", "upregulated_with_age" = "#377EB8")) +
+    theme_classic(base_size = 14) +
+    labs(y = "Number of GO terms", x = NULL) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.6)) +
+    ggtitle(paste0("COp1_", maturation_stage_label, " organoids")) +
+    ylim(c(0, 600))
+}
+```
+
+::: callout-important
+We want to know what are ICE effects on different celltypes within 1 maturation stage (10w)
+:::
+
+# DEA of COp1 10w datasets
+
+DT tables show:
+
+**Only 100 most significant genes per CT shown** when comparing per CT
+
+**Only 200 most significant genes shown** when comparing across all celltypes
+
+**In the comparison tab one can filter for the specific cluster**
+
+::: panel-tabset
+## ICE vs wt
+
+```{r DEA_ICE_wt_10w, warning=FALSE, message=FALSE, fig.height=10,fig.width=8}
+# ICE vs wt across all dataset; for GSEA dont filter based on pvalues
+markers_ICE_wt_COp1_10w = run_de_allCT(
+  harmonized_seurat_COp1_10w, group_by = "phenotype", ident1 = "ICE", ident2 = "wt",
+  dea_csv_path = file.path(DEA_results_path , "DEA_ICE_vs_wt_allCTtogether_COp1_10w_organoids.csv"),
+  remove_MT_before_volcano = TRUE
+)
+```
+
+## ICE vs wt (per CT)
+
+```{r DEA_ICE_wt_perCT_10w, warning=FALSE, message=FALSE, fig.height=10,fig.width=8}
+Celltype = harmonized_seurat_COp1_10w@meta.data %>% select("Celltype") %>% unique %>% unlist %>% unname
+
+DEA_ICE_vs_wt_COp1_10w_perCT = run_de_perCT_volcano(
+  harmonized_seurat_COp1_10w, Celltype, group_by = "Celltype_phenotype",
+  ident1_fn = function(cluster) paste0(cluster, "_ICE"),
+  ident2_fn = function(cluster) paste0(cluster, "_wt"),
+  comparison_label_fn = function(cluster) paste0(cluster, "_ICE_vs_wt"),
+  extra_findmarkers_args = list(min.diff.pct = 0.05)
+)
+
+write.csv(DEA_ICE_vs_wt_COp1_10w_perCT %>% do.call(rbind.data.frame, .), file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_10w_perCT_organoids.csv"))
+```
+:::
+
+# GSEA COp1 10w
+
+**In GSEA i dont remove ICE because it doesnt exist in any GO gene lists**
+
+**Comparisons are done the way the tabs are annotated. In the case "ICE vs wt", positive NES corresponds to ICE and negative to wt**
+
+::: callout-note
+-   Interpretation:
+    -   Upper graph shows the Enrichment score, which indicates how over or under expressed is the gene set compared to the entire list. The highest point of ES is the overall value of ES for this gene set.
+    -   Middle graph shows where all the genes related to the pathway are located in the ranking
+    -   Lower graph indicates the metric we use for the ranking, in this case avg_log2FC
+
+I use geneset library to get BP GO terms using getGO function.
+
+for other gene sets -\> https://www.gsea-msigdb.org/gsea/msigdb/human/collections.jsp<br> for more plots -\> https://www.genekitr.fun/plot-gsea-1
+:::
+
+:::: panel-tabset
+## ICE vs wt
+
+```{r GSEA_DEA_ICE_wt_acrossDataset_10w, warning=FALSE, message=FALSE, fig.height=12, fig.width=12}
+run_gsea_allCT(
+  markers_ICE_wt_COp1_10w, gs = gs, n_pathways = n_pathways_toShow,
+  treemap_title = "dataset COp1_10w - ICE vs wt",
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_allCTtogether_ICE_vs_wt_upregulated_ICE_COp1_10w_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_allCTtogether_ICE_vs_wt_downregulated_ICE_COp1_10w_organoids.xlsx")
+)
+```
+
+## ICE vs wt (per CT)
+
+```{r, results="asis", message=FALSE, warning=FALSE, fig.height=12, fig.width=12}
+gsea_perCelltype = run_gsea_perCT_COp1(
+  DEA_ICE_vs_wt_COp1_10w_perCT, Celltype, gs = gs, n_pathways = n_pathways_toShow,
+  maturation_stage_label = "10w",
+  rds_output_path = file.path(params$gsea_perCelltype_rds_dir, "gsea_perCelltype_10w_lst.RDS"),
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_perCelltype_upregulated_ICE_COp1_10w_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_perCelltype_downregulated_ICE_COp1_10w_organoids.xlsx")
+)
+```
+
+## Amount of GOterms changed 10w
+
+```{r, results="asis", message=FALSE,warning=FALSE, fig.height=12, fig.width=12}
+N_go_terms_10w = build_goterm_count_plot(gsea_perCelltype, "10w")
+N_go_terms_10w
+```
+::::
+
+::: callout-important
+Now that we analysed how ICE affect different celltypes for 10w organoids, we wonder what are the effects on more mature organoids (4months). Are the changes different or similar?
+:::
+
+# DEA of COp1 4m datasets
+
+DT tables show:
+
+**Only 100 most significant genes per CT shown** when comparing per CT
+
+**Only 200 most significant genes shown** when comparing across all celltypes
+
+**In the comparison tab one can filter for the specific cluster**
+
+::: panel-tabset
+## ICE vs wt
+
+```{r DEA_ICE_wt_4m, warning=FALSE, message=FALSE, fig.height=10,fig.width=8}
+markers_ICE_wt_COp1_4m = run_de_allCT(
+  harmonized_seurat_COp1_4m, group_by = "phenotype", ident1 = "ICE", ident2 = "wt",
+  dea_csv_path = file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_4m_organoids.csv"),
+  remove_MT_before_volcano = TRUE
+)
+```
+
+## ICE vs wt (per CT)
+
+```{r DEA_ICE_wt_perCT_4m, warning=FALSE, message=FALSE}
+Celltype = harmonized_seurat_COp1_4m@meta.data %>% select("Celltype") %>% unique %>% unlist %>% unname
+
+DEA_ICE_vs_wt_COp1_4m_perCT = run_de_perCT_volcano(
+  harmonized_seurat_COp1_4m, Celltype, group_by = "Celltype_phenotype",
+  ident1_fn = function(cluster) paste0(cluster, "_ICE"),
+  ident2_fn = function(cluster) paste0(cluster, "_wt"),
+  comparison_label_fn = function(cluster) paste0(cluster, "_ICE_vs_wt"),
+  extra_findmarkers_args = list(min.diff.pct = 0.05)
+)
+
+write.csv(DEA_ICE_vs_wt_COp1_4m_perCT %>% do.call(rbind.data.frame, .), file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_4m_perCT_organoids.csv"))
+```
+:::
+
+# GSEA COp1 4m
+
+**In GSEA i dont remove ICEerry because it doesnt exist in any GO gene lists**
+
+**Comparissons are done the way the tabs are annotated. In the case "ICE vs wt", positive NES corresponds to ICE and negative to wt**
+
+::: callout-note
+-   Interpretation:
+    -   Upper graph shows the Enrichment score, which indicates how over or under expressed is the gene set compared to the entire list. The highest point of ES is the overall value of ES for this gene set.
+    -   Middle graph shows where all the genes related to the pathway are located in the ranking
+    -   Lower graph indicates the metric we use for the ranking, in this case avg_log2FC
+
+I use geneset library to get BP GO terms using getGO function. But one can also use:<br> gs = geneset::getMsigdb(org = "human",category = "C5-GO-BP")
+
+for other gene sets -\> https://www.gsea-msigdb.org/gsea/msigdb/human/collections.jsp<br> for more plots -\> https://www.genekitr.fun/plot-gsea-1
+:::
+
+:::: panel-tabset
+## ICE vs wt
+
+```{r GSEA_DEA_ICE_wt_COp1_4m, warning=FALSE, message=FALSE, fig.height=12, fig.width=12}
+run_gsea_allCT(
+  markers_ICE_wt_COp1_4m, gs = gs, n_pathways = n_pathways_toShow,
+  treemap_title = "dataset COp1_4m - ICE vs wt",
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_allCTtogether_ICE_vs_wt_upregulated_ICE_COp1_4m_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_allCTtogether_ICE_vs_wt_downregulated_ICE_COp1_4m_organoids.xlsx")
+)
+```
+
+## ICE vs wt (per CT)
+
+```{r, results="asis", message=FALSE, warning=FALSE, fig.height=12, fig.width=12}
+gsea_perCelltype = run_gsea_perCT_COp1(
+  DEA_ICE_vs_wt_COp1_4m_perCT, Celltype, gs = gs, n_pathways = n_pathways_toShow,
+  maturation_stage_label = "4m",
+  rds_output_path = file.path(params$gsea_perCelltype_rds_dir, "gsea_perCelltype_4m_lst.RDS"),
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_perCelltype_upregulated_ICE_COp1_4m_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_perCelltype_downregulated_ICE_COp1_4m_organoids.xlsx")
+)
+```
+
+## Amount of GOterms changed 4m
+
+```{r, results="asis", message=FALSE,warning=FALSE, fig.height=12, fig.width=12}
+N_go_terms_4m = build_goterm_count_plot(gsea_perCelltype, "4m")
+
+ggarrange(plotlist = list(N_go_terms_10w, N_go_terms_4m), nrow = 2)
+```
+::::
+
+::: callout-important
+Here are the DEA custom comparissons including 4wpi timepoint
+:::
+
+DT tables show:
+
+**Only 100 most significant genes per CT shown** when comparing per CT
+
+**Only 200 most significant genes shown** when comparing across all celltypes
+
+**In the comparison tab one can filter for the specific cluster**
+
+# DEA/GSEA of COp2 4dpi + 4wpi
+
+::: panel-tabset
+## 4dpi vs 4wpi
+
+```{r DEA_COp2_4dpi_4wpi, warning=FALSE, message=FALSE, fig.height=12, fig.width=12}
+markers = run_de_gsea_allCT(
+  harmonized_seurat_COp2_4dpi_4wpi, group_by = "Protocol_timepoint", ident1 = "COp2_4dpi", ident2 = "COp2_4wpi",
+  dea_csv_path = file.path(DEA_results_path , "DEA_COp2_4dpi_vs_4wpi_organoids.csv"),
+  gs = gs, n_pathways = n_pathways_toShow, treemap_title = "All Celltypes - COp2 4dpi vs 4wpi",
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_upregulated_4dpi_4wpi_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_downregulated_4dpi_4wpi_organoids.xlsx")
+)
+```
+
+## 4dpi vs 4wpi (per CT)
+
+```{r DEA_COp2_4dpi_4wpi_perCT, warning=FALSE, fig.height=12, fig.width=12}
+Celltype = harmonized_seurat_COp2_4dpi_4wpi@meta.data %>% select("Celltype") %>% unique %>% unlist %>% unname
+gsea_perCelltype_COp2 = list()
+
+result = run_de_gsea_perCT(
+  harmonized_seurat_COp2_4dpi_4wpi, Celltype, group_by = "Protocol_timepoint_Celltype",
+  ident1_fn = function(cluster) paste0("COp2_4dpi_", cluster),
+  ident2_fn = function(cluster) paste0("COp2_4wpi_", cluster),
+  comparison_label_fn = function(cluster) paste0("COp2_4dpi_4wpi_", cluster),
+  treemap_title_fn = function(cluster) paste0(cluster, " - COp2 4dpi vs 4wpi"),
+  gs = gs, n_pathways = n_pathways_toShow
+)
+DEA_COp2_4dpi_vs_4wpi_perCT = result$dea
+gsea_perCelltype_COp2[["perCelltype_4dpi_vs_4wpi"]] = result$gsea
+
+save_gsea_perCT_xlsx(
+  result$gsea,
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_downregulated_4dpi_4wpi_organoids.xlsx"),
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_upregulated_4dpi_4wpi_organoids.xlsx")
+)
+write.csv(do.call(rbind, DEA_COp2_4dpi_vs_4wpi_perCT %>% unname), file.path(DEA_results_path , "DEA_COp2_4dpi_4wpi_perCT_organoids.csv"))
+```
+
+## 4dpi ICE vs 4dpi wt (per CT)
+
+```{r DEA_COp2_4dpiICE_4wpiWT, warning=FALSE, fig.height=12, fig.width=12}
+markers = run_de_gsea_allCT(
+  harmonized_seurat_COp2_4dpi_4wpi, group_by = "Protocol_timepoint_phenotype", ident1 = "COp2_4dpi_ICE", ident2 = "COp2_4dpi_wt",
+  dea_csv_path = file.path(DEA_results_path , "DEA_COp2_4dpiICE_vs_4dpiWT_organoids.csv"),
+  gs = gs, n_pathways = n_pathways_toShow, treemap_title = "All Celltypes - COp2 4dpiICE vs 4dpiwt",
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_upregulated_4dpiICE_4dpiwt_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_downregulated_4dpiICE_4dpiwt_organoids.xlsx")
+)
+
+result = run_de_gsea_perCT(
+  harmonized_seurat_COp2_4dpi_4wpi, Celltype, group_by = "Protocol_timepoint_Celltype_phenotype",
+  ident1_fn = function(cluster) paste0("COp2_4dpi_", cluster, "_ICE"),
+  ident2_fn = function(cluster) paste0("COp2_4dpi_", cluster, "_wt"),
+  comparison_label_fn = function(cluster) paste0(cluster, "_4dpiICE_vs_4dpiwt"),
+  # NOTE: fixed a typo in the original title text ("4pi" -> "4dpi"); cosmetic only, no
+  # behavior change.
+  treemap_title_fn = function(cluster) paste0(cluster, " - COp2 4dpi ICE vs 4dpi wt"),
+  gs = gs, n_pathways = n_pathways_toShow
+)
+DEA_COp2_4dpiICE_vs_4dpiwt_perCT = result$dea
+gsea_perCelltype_COp2[["perCelltype_4dpi_ICE_vs_4dpi_wt"]] = result$gsea
+
+save_gsea_perCT_xlsx(
+  result$gsea,
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_downregulated_4dpiICE_4dpiwt_organoids.xlsx"),
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_upregulated_4dpiICE_4dpiwt_organoids.xlsx")
+)
+write.csv(do.call(rbind, DEA_COp2_4dpiICE_vs_4dpiwt_perCT %>% unname), file.path(DEA_results_path , "DEA_COp2_4dpiICE_vs_4dpiwt_perCT_organoids.csv"))
+```
+
+## 4wpi ICE vs 4wpi wt (per CT)
+
+```{r DEA_COp2_4wpiICE_4wpiWT, warning=FALSE, fig.height=12, fig.width=12}
+markers = run_de_gsea_allCT(
+  harmonized_seurat_COp2_4dpi_4wpi, group_by = "Protocol_timepoint_phenotype", ident1 = "COp2_4wpi_ICE", ident2 = "COp2_4wpi_wt",
+  dea_csv_path = file.path(DEA_results_path , "DEA_COp2_4wpiICE_vs_4wpiWT_organoids.csv"),
+  gs = gs, n_pathways = n_pathways_toShow, treemap_title = "All Celltypes - COp2 4wpiICE vs 4wpiwt",
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_upregulated_4wpiICE_4wpiwt_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_downregulated_4wpiICE_4wpiwt_organoids.xlsx")
+)
+
+result = run_de_gsea_perCT(
+  harmonized_seurat_COp2_4dpi_4wpi, Celltype, group_by = "Protocol_timepoint_Celltype_phenotype",
+  ident1_fn = function(cluster) paste0("COp2_4wpi_", cluster, "_ICE"),
+  ident2_fn = function(cluster) paste0("COp2_4wpi_", cluster, "_wt"),
+  comparison_label_fn = function(cluster) paste0(cluster, "_4wpiICE_vs_4wpiwt"),
+  treemap_title_fn = function(cluster) paste0(cluster, " - COp2 4wpi ICE vs 4wpi wt"),
+  gs = gs, n_pathways = n_pathways_toShow
+)
+DEA_COp2_4wpiICE_vs_4wpiwt_perCT = result$dea
+gsea_perCelltype_COp2[["perCelltype_4wpi_ICE_vs_4wpi_wt"]] = result$gsea
+
+save_gsea_perCT_xlsx(
+  result$gsea,
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_downregulated_4wpiICE_4wpiwt_organoids.xlsx"),
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_upregulated_4wpiICE_4wpiwt_organoids.xlsx")
+)
+write.csv(do.call(rbind, DEA_COp2_4wpiICE_vs_4wpiwt_perCT %>% unname), file.path(DEA_results_path , "DEA_COp2_4wpiICE_vs_4wpiwt_perCT_organoids.csv"))
+```
+
+## 4dpi ICE vs 4wpi ICE (per CT)
+
+```{r DEA_COp2_4dpiICE_4wpiICE, warning=FALSE, fig.height=12, fig.width=12}
+markers = run_de_gsea_allCT(
+  harmonized_seurat_COp2_4dpi_4wpi, group_by = "Protocol_timepoint_phenotype", ident1 = "COp2_4dpi_ICE", ident2 = "COp2_4wpi_ICE",
+  dea_csv_path = file.path(DEA_results_path , "DEA_COp2_4dpiICE_vs_4wpiICE_organoids.csv"),
+  gs = gs, n_pathways = n_pathways_toShow, treemap_title = "All Celltypes - COp2 4dpiICE vs 4wpiICE",
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_upregulated_4dpiICE_4wpiICE_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_downregulated_4dpiICE_4wpiICE_organoids.xlsx")
+)
+
+result = run_de_gsea_perCT(
+  harmonized_seurat_COp2_4dpi_4wpi, Celltype, group_by = "Protocol_timepoint_Celltype_phenotype",
+  ident1_fn = function(cluster) paste0("COp2_4dpi_", cluster, "_ICE"),
+  ident2_fn = function(cluster) paste0("COp2_4wpi_", cluster, "_ICE"),
+  comparison_label_fn = function(cluster) paste0(cluster, "_4dpiICE_vs_4wpiICE"),
+  treemap_title_fn = function(cluster) paste0(cluster, " - COp2 4dpi ICE vs 4wpi ICE"),
+  gs = gs, n_pathways = n_pathways_toShow
+)
+DEA_COp2_4dpiICE_vs_4wpiICE_perCT = result$dea
+gsea_perCelltype_COp2[["perCelltype_4dpi_ICE_vs_4wpi_ICE"]] = result$gsea
+
+save_gsea_perCT_xlsx(
+  result$gsea,
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_downregulated_4dpiICE_4wpiICE_organoids.xlsx"),
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_upregulated_4dpiICE_4wpiICE_organoids.xlsx")
+)
+write.csv(do.call(rbind, DEA_COp2_4dpiICE_vs_4wpiICE_perCT %>% unname), file.path(DEA_results_path , "DEA_COp2_4dpiICE_vs_4wpiICE_perCT_organoids.csv"))
+```
+
+## 4dpi wt vs 4wpi wt (per CT)
+
+```{r DEA_COp2_4dpiWT_4wpiWT, warning=FALSE, fig.height=12, fig.width=12}
+markers = run_de_gsea_allCT(
+  harmonized_seurat_COp2_4dpi_4wpi, group_by = "Protocol_timepoint_phenotype", ident1 = "COp2_4dpi_wt", ident2 = "COp2_4wpi_wt",
+  dea_csv_path = file.path(DEA_results_path , "DEA_COp2_4dpiWT_vs_4wpiWT_organoids.csv"),
+  gs = gs, n_pathways = n_pathways_toShow, treemap_title = "All Celltypes - COp2 4dpiwt vs 4wpiwt",
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_upregulated_4dpiwt_4wpiwt_organoids.xlsx"),
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_allCTtogether_downregulated_4dpiwt_4wpiwt_organoids.xlsx")
+)
+
+result = run_de_gsea_perCT(
+  harmonized_seurat_COp2_4dpi_4wpi, Celltype, group_by = "Protocol_timepoint_Celltype_phenotype",
+  ident1_fn = function(cluster) paste0("COp2_4dpi_", cluster, "_wt"),
+  ident2_fn = function(cluster) paste0("COp2_4wpi_", cluster, "_wt"),
+  comparison_label_fn = function(cluster) paste0(cluster, "_4dpiwt_vs_4wpiwt"),
+  treemap_title_fn = function(cluster) paste0(cluster, " - COp2 4dpi wt vs 4wpi wt"),
+  gs = gs, n_pathways = n_pathways_toShow
+)
+DEA_COp2_4dpiwt_vs_4wpiwt_perCT = result$dea
+gsea_perCelltype_COp2[["perCelltype_4dpi_wt_vs_4wpi_wt"]] = result$gsea
+
+save_gsea_perCT_xlsx(
+  result$gsea,
+  down_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_downregulated_4dpiwt_4wpiwt_organoids.xlsx"),
+  up_xlsx_path = file.path(gsea_results_path , "GOterms_COp2_perCelltype_upregulated_4dpiwt_4wpiwt_organoids.xlsx")
+)
+write.csv(do.call(rbind, DEA_COp2_4dpiwt_vs_4wpiwt_perCT %>% unname), file.path(DEA_results_path , "DEA_COp2_4dpiwt_vs_4wpiwt_perCT_organoids.csv"))
+
+saveRDS(gsea_perCelltype_COp2 , file.path(object_storage_path , "gsea_COp2_perCelltype_all_comparissons.RDS"))
+```
+:::
+
+
+# sessioninfo
+
+```{r}
+sessionInfo()
+```

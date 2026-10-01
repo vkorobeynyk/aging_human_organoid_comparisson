@@ -1,0 +1,101 @@
+go cluster parent score size term parentTerm termUniqueness termUniquenessWithinCluster termDispensability
+GO:0060429 1 GO:0060429 3.07087359072009 1237 epithelium development epithelium development 0.82442 0.43375 0
+GO:0019226 2 GO:0019226 2.86883918743844 69 transmission of nerve impulse transmission of nerve impulse 0.85908 0.469 0
+GO:0050673 3 GO:0050673 2.82726744609475 480 epithelial cell proliferation epithelial cell proliferation 0.92318 0.437 0
+GO:0008544 1 GO:0060429 2.75391716727285 385 epidermis development epithelium development 0.8436 0.50875 0.693
+GO:0019228 2 GO:0019226 2.36641262903974 33 neuronal action potential transmission of nerve impulse 0.86081 0.494333333333333 0.947
+GO:0098773 4 GO:0098773 2.31479237477785 128 skin epidermis development skin epidermis development 0.82542 0.585666666666667 0
+GO:0051145 5 GO:0051145 2.2348959902716 76 smooth muscle cell differentiation smooth muscle cell differentiation 0.84638 0.378571428571429 0
+GO:0008285 3 GO:0050673 2.19533944542197 957 negative regulation of cell population proliferation epithelial cell proliferation 0.89838 0.443 0.584
+GO:0060541 6 GO:0060541 2.17504615341296 214 respiratory system development respiratory system development 0.82587 0.517454545454545 0
+GO:0097191 7 GO:0097191 2.12804679577984 229 extrinsic apoptotic signaling pathway extrinsic apoptotic signaling pathway 0.90239 0.508555555555556 0
+GO:0045165 5 GO:0051145 2.12629706697427 286 cell fate commitment smooth muscle cell differentiation 0.88062 0.676571428571429 0.377
+GO:0031076 4 GO:0098773 2.12629706697427 37 embryonic camera-type eye development skin epidermis development 0.84003 0.569166666666667 0.352
+GO:0051897 7 GO:0097191 2.00301580827712 171 positive regulation of phosphatidylinositol 3-kinase/protein kinase B signal transduction extrinsic apoptotic signaling pathway 0.89671 0.522888888888889 0.311
+GO:0030855 1 GO:0060429 2.00301580827712 741 epithelial cell differentiation epithelium development 0.81974 0.466375 0.893
+GO:0060425 6 GO:0060541 2.00301580827712 54 lung morphogenesis respiratory system development 0.79476 0.464181818181818 0.885
+GO:0050918 8 GO:0050918 1.99166084492379 69 positive chemotaxis positive chemotaxis 0.95581 0.705 0
+GO:0055008 9 GO:0055008 1.96331015387292 61 cardiac muscle tissue morphogenesis cardiac muscle tissue morphogenesis 0.74842 0.379714285714286 0
+GO:0048048 4 GO:0098773 1.95279477519462 35 embryonic eye morphogenesis skin epidermis development 0.81717 0.569666666666667 0.351
+GO:0010463 3 GO:0050673 1.95279477519462 44 mesenchymal cell proliferation epithelial cell proliferation 0.93943 0.56025 0.452
+GO:2001236 7 GO:0097191 1.95279477519462 158 regulation of extrinsic apoptotic signaling pathway extrinsic apoptotic signaling pathway 0.89886 0.466666666666667 0.951
+GO:0055010 1 GO:0060429 1.95279477519462 47 ventricular cardiac muscle tissue morphogenesis epithelium development 0.75249 0.453 0.558
+GO:0048729 1 GO:0060429 1.95279477519462 631 tissue morphogenesis epithelium development 0.81209 0.45275 0.752
+GO:0003007 9 GO:0055008 1.95279477519462 264 heart morphogenesis cardiac muscle tissue morphogenesis 0.77308 0.436 0.839
+GO:0050678 3 GO:0050673 1.95279477519462 407 regulation of epithelial cell proliferation epithelial cell proliferation 0.89823 0.400166666666667 0.968
+GO:0071363 10 GO:0071363 1.95279477519462 730 cellular response to growth factor stimulus cellular response to growth factor stimulus 0.93889 0.3225 0
+GO:0051896 7 GO:0097191 1.90148654917708 248 regulation of phosphatidylinositol 3-kinase/protein kinase B signal transduction extrinsic apoptotic signaling pathway 0.90263 0.51 0.322
+GO:0043588 4 GO:0098773 1.86910298765266 317 skin development skin epidermis development 0.84555 0.564 0.916
+GO:0008015 2 GO:0019226 1.85887280764854 515 blood circulation transmission of nerve impulse 0.87245 0.349444444444444 0.554
+GO:0019221 8 GO:0050918 1.85879704735096 513 cytokine-mediated signaling pathway positive chemotaxis 0.89752 0.60475 0.406
+GO:0070848 10 GO:0071363 1.85879704735096 761 response to growth factor cellular response to growth factor stimulus 0.9388 0.3225 0.988
+GO:0048732 4 GO:0098773 1.84501845961645 443 gland development skin epidermis development 0.84915 0.635333333333333 0.435
+GO:0001822 6 GO:0060541 1.84436155307611 314 kidney development respiratory system development 0.79719 0.480545454545454 0.391
+GO:0030324 6 GO:0060541 1.81210988031253 188 lung development respiratory system development 0.79946 0.414727272727273 0.984
+GO:0060415 9 GO:0055008 1.78415047635329 74 muscle tissue morphogenesis cardiac muscle tissue morphogenesis 0.78939 0.403285714285714 0.987
+GO:0048644 9 GO:0055008 1.78415047635329 81 muscle organ morphogenesis cardiac muscle tissue morphogenesis 0.80912 0.402142857142857 0.981
+GO:0050730 11 GO:0050730 1.71811558496361 231 regulation of peptidyl-tyrosine phosphorylation regulation of peptidyl-tyrosine phosphorylation 0.95795 0.5145 0
+GO:2001234 7 GO:0097191 1.71371227803182 243 negative regulation of apoptotic signaling pathway extrinsic apoptotic signaling pathway 0.89537 0.487222222222222 0.805
+GO:0046622 12 GO:0046622 1.70299883812735 51 positive regulation of organ growth positive regulation of organ growth 0.84884 0.507 0
+GO:0060428 6 GO:0060541 1.70299883812735 44 lung epithelium development respiratory system development 0.79519 0.454272727272727 0.87
+GO:0072001 6 GO:0060541 1.70063142086872 324 renal system development respiratory system development 0.8177 0.509181818181818 0.393
+GO:0030239 5 GO:0051145 1.69651165597255 71 myofibril assembly smooth muscle cell differentiation 0.82055 0.325285714285714 0.75
+GO:0055002 5 GO:0051145 1.65764864210688 73 striated muscle cell development smooth muscle cell differentiation 0.84097 0.324857142857143 0.751
+GO:0010927 9 GO:0055008 1.5974912121304 128 cellular component assembly involved in morphogenesis cardiac muscle tissue morphogenesis 0.8565 0.614 0.409
+GO:0008284 3 GO:0050673 1.5974912121304 1286 positive regulation of cell population proliferation epithelial cell proliferation 0.89012 0.429166666666667 0.61
+GO:0003073 2 GO:0019226 1.5974912121304 95 regulation of systemic arterial blood pressure transmission of nerve impulse 0.86945 0.391333333333333 0.475
+GO:0042633 13 GO:0042633 1.5974912121304 117 hair cycle hair cycle 0.89632 0.2092 0
+GO:0042303 13 GO:0042633 1.5974912121304 117 molting cycle hair cycle 0.89632 0.2092 0.999
+GO:0007186 14 GO:0007186 1.58434741821112 1287 G protein-coupled receptor signaling pathway G protein-coupled receptor signaling pathway 0.90579 0.625 0
+GO:0061548 1 GO:0060429 1.58434741821112 17 ganglion development epithelium development 0.84412 0.600125 0.526
+GO:0003013 2 GO:0019226 1.58434741821112 601 circulatory system process transmission of nerve impulse 0.87186 0.350777777777778 0.559
+GO:0009593 15 GO:0009593 1.57954223146091 513 detection of chemical stimulus detection of chemical stimulus 0.9392 0.428333333333333 0
+GO:0008217 2 GO:0019226 1.57412302604493 187 regulation of blood pressure transmission of nerve impulse 0.86361 0.366444444444444 0.496
+GO:0009887 9 GO:0055008 1.572903915218 1040 animal organ morphogenesis cardiac muscle tissue morphogenesis 0.80171 0.417285714285714 0.701
+GO:0015718 16 GO:0015718 1.57160747515843 179 monocarboxylic acid transport monocarboxylic acid transport 0.98773 0.5425 0
+GO:0198738 7 GO:0097191 1.57067296837271 461 cell-cell signaling by wnt extrinsic apoptotic signaling pathway 0.93918 0.705111111111111 0.331
+GO:0051150 5 GO:0051145 1.56964775019521 45 regulation of smooth muscle cell differentiation smooth muscle cell differentiation 0.82615 0.399285714285714 0.957
+GO:0033002 3 GO:0050673 1.55260616881583 247 muscle cell proliferation epithelial cell proliferation 0.92432 0.441833333333333 0.515
+GO:0043491 7 GO:0097191 1.54197798875163 290 phosphatidylinositol 3-kinase/protein kinase B signal transduction extrinsic apoptotic signaling pathway 0.90877 0.564555555555555 0.329
+GO:0007600 2 GO:0019226 1.48213816499205 979 sensory perception transmission of nerve impulse 0.87427 0.399444444444444 0.673
+GO:0007156 17 GO:0007156 1.47183772415238 168 homophilic cell adhesion via plasma membrane adhesion molecules homophilic cell adhesion via plasma membrane adhesion molecules 0.99385 1 0
+GO:0048546 6 GO:0060541 1.47183772415238 49 digestive tract morphogenesis respiratory system development 0.83445 0.620454545454545 0.321
+GO:0055001 5 GO:0051145 1.47183772415238 195 muscle cell development smooth muscle cell differentiation 0.83298 0.326714285714286 0.802
+GO:0007200 14 GO:0007186 1.45898684620611 113 phospholipase C-activating G protein-coupled receptor signaling pathway G protein-coupled receptor signaling pathway 0.92362 0.625 0.75
+GO:0048660 3 GO:0050673 1.45898684620611 171 regulation of smooth muscle cell proliferation epithelial cell proliferation 0.90082 0.404916666666667 0.496
+GO:0001942 13 GO:0042633 1.4489087566531 93 hair follicle development hair cycle 0.76919 0.2084 0.983
+GO:0022405 13 GO:0042633 1.4489087566531 96 hair cycle process hair cycle 0.89704 0.2066 0.986
+GO:0022404 13 GO:0042633 1.4489087566531 96 molting cycle process hair cycle 0.89704 0.2066 0.986
+GO:0060759 8 GO:0050918 1.44035702669771 183 regulation of response to cytokine stimulus positive chemotaxis 0.92661 0.6245 0.367
+GO:0055078 18 GO:0055078 1.42850137032564 46 sodium ion homeostasis sodium ion homeostasis 1 1 0
+GO:0033081 19 GO:0033081 1.42850137032564 27 regulation of T cell differentiation in thymus regulation of T cell differentiation in thymus 0.82462 0.670333333333333 0
+GO:0048745 1 GO:0060429 1.42850137032564 27 smooth muscle tissue development epithelium development 0.87027 0.530375 0.538
+GO:0030323 6 GO:0060541 1.42850137032564 192 respiratory tube development respiratory system development 0.80682 0.482454545454545 0.325
+GO:0045777 2 GO:0019226 1.42850137032564 33 positive regulation of blood pressure transmission of nerve impulse 0.88079 0.441222222222222 0.434
+GO:0015909 16 GO:0015718 1.42739589452276 67 long-chain fatty acid transport monocarboxylic acid transport 0.98797 0.5425 0.915
+GO:0045214 5 GO:0051145 1.41721262494694 45 sarcomere organization smooth muscle cell differentiation 0.82928 0.352142857142857 0.713
+GO:0042744 20 GO:0042744 1.41461000920426 31 hydrogen peroxide catabolic process hydrogen peroxide catabolic process 0.99171 1 0
+GO:0043616 3 GO:0050673 1.41461000920426 59 keratinocyte proliferation epithelial cell proliferation 0.93411 0.5165 0.826
+GO:0048568 4 GO:0098773 1.41461000920426 453 embryonic organ development skin epidermis development 0.8065 0.503833333333333 0.432
+GO:0007606 2 GO:0019226 1.41461000920426 533 sensory perception of chemical stimulus transmission of nerve impulse 0.8802 0.425333333333333 0.641
+GO:0050679 3 GO:0050673 1.37661976704874 218 positive regulation of epithelial cell proliferation epithelial cell proliferation 0.89494 0.41675 0.913
+GO:0042044 21 GO:0042044 1.372276522008 38 fluid transport fluid transport 0.994 1 0
+GO:0050731 11 GO:0050730 1.372276522008 168 positive regulation of peptidyl-tyrosine phosphorylation regulation of peptidyl-tyrosine phosphorylation 0.94991 0.5145 0.971
+GO:0060421 12 GO:0046622 1.372276522008 40 positive regulation of heart growth positive regulation of organ growth 0.79798 0.507 0.986
+GO:2001233 7 GO:0097191 1.372276522008 398 regulation of apoptotic signaling pathway extrinsic apoptotic signaling pathway 0.89637 0.470666666666667 0.838
+GO:0048662 3 GO:0050673 1.372276522008 70 negative regulation of smooth muscle cell proliferation epithelial cell proliferation 0.90277 0.423583333333333 0.461
+GO:0051606 15 GO:0009593 1.372276522008 675 detection of stimulus detection of chemical stimulus 0.94764 0.421666666666667 0.962
+GO:0071772 10 GO:0071363 1.372276522008 179 response to BMP cellular response to growth factor stimulus 0.94274 0.32075 0.858
+GO:0071773 10 GO:0071363 1.372276522008 179 cellular response to BMP stimulus cellular response to growth factor stimulus 0.94268 0.31925 0.864
+GO:0050974 15 GO:0009593 1.3711197232561 35 detection of mechanical stimulus involved in sensory perception detection of chemical stimulus 0.85443 0.491333333333333 0.753
+GO:0002443 19 GO:0033081 1.36724687457847 466 leukocyte mediated immunity regulation of T cell differentiation in thymus 0.99192 0.730666666666667 0.396
+GO:0048659 3 GO:0050673 1.36724687457847 175 smooth muscle cell proliferation epithelial cell proliferation 0.92516 0.44675 0.498
+GO:0001763 9 GO:0055008 1.36147372255935 203 morphogenesis of a branching structure cardiac muscle tissue morphogenesis 0.83629 0.599285714285714 0.425
+GO:0010464 3 GO:0050673 1.35912801191963 32 regulation of mesenchymal cell proliferation epithelial cell proliferation 0.91907 0.529916666666667 0.433
+GO:0072073 6 GO:0060541 1.35912801191963 150 kidney epithelium development respiratory system development 0.78113 0.492090909090909 0.364
+GO:0001656 6 GO:0060541 1.34793114924401 94 metanephros development respiratory system development 0.81539 0.522727272727273 0.353
+GO:0050798 19 GO:0033081 1.33388006095918 47 activated T cell proliferation regulation of T cell differentiation in thymus 0.8711 0.665 0.593
+GO:0003229 1 GO:0060429 1.33169546135399 58 ventricular cardiac muscle tissue development epithelium development 0.80158 0.473625 0.57
+GO:0033273 8 GO:0050918 1.32976549600175 86 response to vitamin positive chemotaxis 0.95515 0.70175 0.407
+GO:0007178 7 GO:0097191 1.31260290170411 410 transmembrane receptor protein serine/threonine kinase signaling pathway extrinsic apoptotic signaling pathway 0.91104 0.649666666666667 0.536
+GO:0001944 6 GO:0060541 1.31260290170411 831 vasculature development respiratory system development 0.80941 0.635363636363636 0.422

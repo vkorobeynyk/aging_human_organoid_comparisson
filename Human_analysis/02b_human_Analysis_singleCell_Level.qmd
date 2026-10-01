@@ -1,0 +1,243 @@
+---
+title: "ICE Annina 10x sequencing analysis - Analysis of human data (single-cell level)"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  singlecell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
+  dea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results_singlecell"
+  gsea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/GSEA_results_singlecell"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  n_gsea_pathways: 150
+  min_fraction_cells_expressing: 0.02
+---
+ 
+# Introduction
+ 
+Annina performed several experiments where she isolated nuclei and whole-cell based on mCherry and sequenced the organoids. The latter were treated with ICE, turning them into "aged organoids", so we have control (WT) and ICE phenotypes. The overall goal of the project is to understand if aging signatures, in terms of gene expression are shared when comparing organoids and human data. For that, we perform data analysis or organoids and human data and also build glmnet models (separately for each dataset). In the end, we compare all the results that we obtained.
+ 
+::: callout-note
+In this script we perform the human Age DEA + GSEA at single-cell resolution, rather
+than metacell as in `02_human_Analysis_metacell_Level.qmd`.
+ 
+**What this script does:** loads the filtered (but unaggregated) single-cell
+`SingleCellExperiment` objects saved by `01_human_Processing.qmd`
+(`singlecell_sce_IN_human.RDS` / `singlecell_sce_EN_human.RDS`), drops genes that are
+detected in fewer than `params$min_fraction_cells_expressing` of cells, fits a negative binomial GLM per gene via `glmGamPoi` to tests for the
+effect of Age, and runs GSEA (GO Biological Process) on the resulting ranked gene list —
+separately for inhibitory and excitatory neurons.
+ 
+::: callout-important
+Testing individual cells as if they were independent samples is known to inflate
+statistical significance, since cells from the same patient are correlated with each
+other rather than being independent biological replicates. This is a real,
+recognized tradeoff of single-cell-level DEA and the same
+caveat already applies to the organoid single-cell DEA in
+`03_organoid_Analysis_singleCell_Level.qmd`. Single-cell-level results here should be
+interpreted as more sensitive but less conservative than the metacell-level DEA in
+`02_human_Analysis_metacell_Level.qmd`, not as a strictly "better" replacement for it.
+:::
+:::
+ 
+# Setup
+ 
+```{r setup, tags=c(), warning=FALSE, message=FALSE}
+suppressMessages({
+  library(SingleCellExperiment)
+  library(glmGamPoi)
+  library(ggplot2)
+  library(genekitr)
+  library(geneset)
+  library(rrvgo)
+  library(tibble)
+  library(dplyr)
+  library(magrittr)
+})
+source(params$helper_functions_path)
+ 
+dir.create(params$dea_output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(params$gsea_output_dir, recursive = TRUE, showWarnings = FALSE)
+ 
+gs = geneset::getGO(org = "human", ont = "bp")
+n_pathways_toShow = params$n_gsea_pathways
+```
+ 
+# Load data
+ 
+```{r load_data}
+singlecell_sce_IN = readRDS(file.path(params$singlecell_dir, "singlecell_sce_IN_human.RDS"))
+singlecell_sce_EN = readRDS(file.path(params$singlecell_dir, "singlecell_sce_EN_human.RDS"))
+```
+ 
+# Filter genes by detection rate
+ 
+Genes detected (count > 0) in fewer than `params$min_fraction_cells_expressing` of
+cells are dropped here, before either object is passed into `glm_gp()`. This is a
+visible, standalone step (rather than hidden inside the DEA function) so the
+before/after gene counts can be inspected directly - see the callout above for why this
+filter matters at single-cell resolution.
+ 
+```{r filter-genes-min-detection, warning=FALSE, message=FALSE}
+#' Keep genes detected (count > 0) in at least min_fraction_cells of cells
+#' Rationale: at single-cell resolution, a gene detected in only a handful of the many
+#' thousands of cells gives glm_gp() an essentially unconstrained per-gene coefficient
+#' (huge nominal log2FC, huge SE) rather than a meaningful estimate - see callout above.
+filter_genes_min_detection = function(sce, min_fraction_cells = params$min_fraction_cells_expressing) {
+  n_genes_before = nrow(sce)
+  keep = rowSums(counts(sce) > 0) >= (min_fraction_cells * ncol(sce))
+  sce_filtered = sce[keep, ]
+ 
+  message(sprintf(
+    "filter_genes_min_detection(): %d cells | keeping %d/%d genes detected in >= %.0f%% of cells (dropped %d)",
+    ncol(sce), nrow(sce_filtered), n_genes_before, 100 * min_fraction_cells,
+    n_genes_before - nrow(sce_filtered)
+  ))
+ 
+  sce_filtered
+}
+ 
+singlecell_sce_IN = filter_genes_min_detection(singlecell_sce_IN)
+singlecell_sce_EN = filter_genes_min_detection(singlecell_sce_EN)
+```
+ 
+# Helper functions for this script
+ 
+```{r singlecell-dea-helper-functions, warning=FALSE, message=FALSE}
+#' Single-cell-level DEA for a continuous covariate (Age), via glmGamPoi - a negative
+#' binomial GLM implementation built for single-cell-scale data (the same engine used
+#' internally by SCTransform's v2 flavor), much faster than DESeq2 at this many cells
+#' while using the identical design-formula syntax and covariate adjustment.
+#'
+#' `sce` is expected to already be gene-filtered (see "Filter genes by detection rate"
+#' above). `Age` is coerced to numeric here, so it enters the design matrix as a single
+#' continuous slope rather than (silently) as a multi-level factor if it wasn't already
+#' numeric in the source SCE - mirroring the explicit cast already done in
+#' `metacell_DESeq2_DEA`'s caller for the metacell-level analysis.
+#'
+#' @param sce SingleCellExperiment (single-cell, not metacell), already gene-filtered
+#' @param design_formula e.g. ~ Diagnosis + Sample_Source + Sex + Age
+#' @param contrast_name name of the coefficient to test (e.g. "Age")
+#' @return data.frame with gene, avg_log2FC, padj (NA-padj genes dropped)
+run_singlecell_dea = function(sce, design_formula, contrast_name) {
+  sce$Age = as.numeric(sce$Age)
+  age_span = diff(range(sce$Age, na.rm = TRUE))
+
+  fit = glmGamPoi::glm_gp(sce, design = design_formula, on_disk = FALSE)
+  res = glmGamPoi::test_de(fit, contrast = contrast_name)
+
+  message(sprintf(
+    "run_singlecell_dea(): Age spans %.1f years in this object - avg_log2FC_full_age_span rescales the per-year coefficient by this",
+    age_span
+  ))
+
+  res %>%
+    dplyr::rename(gene = name, avg_log2FC = lfc, padj = adj_pval) %>%
+    dplyr::mutate(avg_log2FC_full_age_span = avg_log2FC * age_span) %>%
+    dplyr::filter(!is.na(padj))
+}
+```
+ 
+# DEA + GSEA
+ 
+::: panel-tabset
+## IN
+ 
+```{r DEA_singlecell_IN, warning=FALSE, message=FALSE}
+markers_singlecell_IN = run_singlecell_dea(
+  singlecell_sce_IN,
+  design_formula = as.formula("~ Diagnosis + Sample_Source + Sex + Age"),
+  contrast_name = "Age"
+)
+ 
+write.csv(markers_singlecell_IN, file.path(params$dea_output_dir, "DEA_singlecell_iN_old_vs_young.csv"))
+ 
+EnhancedVolcano::EnhancedVolcano(markers_singlecell_IN,
+              lab = markers_singlecell_IN$gene,
+              x = 'avg_log2FC_full_age_span',
+              y = 'padj',
+              title = 'Single-cell DEA - Age effect - IN',
+              subtitle = 'log2FC rescaled to full observed age span (was per-year)',
+              xlab = bquote(~Log[2]~'fold change (full age span)'),
+              pCutoff = 0.05,
+              FCcutoff = 1,
+              pointSize = 3.0,
+              labSize = 6.0,
+              drawConnectors = TRUE)
+```
+ 
+## EN
+ 
+```{r DEA_singlecell_EN, warning=FALSE, message=FALSE}
+markers_singlecell_EN = run_singlecell_dea(
+  singlecell_sce_EN,
+  design_formula = as.formula("~ Diagnosis + Sample_Source + Sex + Age"),
+  contrast_name = "Age"
+)
+ 
+write.csv(markers_singlecell_EN, file.path(params$dea_output_dir, "DEA_singlecell_exN_old_vs_young.csv"))
+ 
+EnhancedVolcano::EnhancedVolcano(markers_singlecell_EN,
+              lab = markers_singlecell_EN$gene,
+              x = 'avg_log2FC_full_age_span',
+              y = 'padj',
+              title = 'Single-cell DEA - Age effect - EN',
+              subtitle = 'log2FC rescaled to full observed age span (was per-year)',
+              xlab = bquote(~Log[2]~'fold change (full age span)'),
+              pCutoff = 0.05,
+              FCcutoff = 1,
+              pointSize = 3.0,
+              labSize = 6.0,
+              drawConnectors = TRUE)
+```
+:::
+ 
+# GSEA
+ 
+::: panel-tabset
+## IN
+ 
+```{r GSEA_singlecell_IN, warning=FALSE, message=FALSE, fig.height=12, fig.width=12}
+gsea_singlecell_IN = gsea_analysis(
+  markers = markers_singlecell_IN, cluster = "trending clusters", gs = gs,
+  n_pathways = n_pathways_toShow, plot_type = "bar"
+)
+ 
+write.table(gsea_singlecell_IN$gsea_df %>% dplyr::filter(NES > 0) %>% dplyr::select(hsapiens_BP_ID, p.adjust),
+            file.path(params$gsea_output_dir, "GOterms_singlecell_iN_upregulated_old.txt"), row.names = FALSE, quote = FALSE)
+write.table(gsea_singlecell_IN$gsea_df %>% dplyr::filter(NES < 0) %>% dplyr::select(hsapiens_BP_ID, p.adjust),
+            file.path(params$gsea_output_dir, "GOterms_singlecell_iN_downregulated_old.txt"), row.names = FALSE, quote = FALSE)
+ 
+x = plot_ReducedGOterms(gsea_df = gsea_singlecell_IN$gsea_df, title_label = "single-cell human IN - Age effect")
+```
+ 
+## EN
+ 
+```{r GSEA_singlecell_EN, warning=FALSE, message=FALSE, fig.height=12, fig.width=12}
+gsea_singlecell_EN = gsea_analysis(
+  markers = markers_singlecell_EN, cluster = "trending clusters", gs = gs,
+  n_pathways = n_pathways_toShow, plot_type = "bar"
+)
+ 
+write.table(gsea_singlecell_EN$gsea_df %>% dplyr::filter(NES > 0) %>% dplyr::select(hsapiens_BP_ID, p.adjust),
+            file.path(params$gsea_output_dir, "GOterms_singlecell_exN_upregulated_old.txt"), row.names = FALSE, quote = FALSE)
+write.table(gsea_singlecell_EN$gsea_df %>% dplyr::filter(NES < 0) %>% dplyr::select(hsapiens_BP_ID, p.adjust),
+            file.path(params$gsea_output_dir, "GOterms_singlecell_exN_downregulated_old.txt"), row.names = FALSE, quote = FALSE)
+ 
+x = plot_ReducedGOterms(gsea_df = gsea_singlecell_EN$gsea_df, title_label = "single-cell human EN - Age effect")
+```
+:::
+ 
+# sessioninfo
+ 
+```{r}
+sessionInfo()
+```

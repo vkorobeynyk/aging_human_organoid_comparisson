@@ -1,0 +1,430 @@
+---
+title: "ICE Annina 10x sequencing analysis - ML predictions of organoids"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  object_storage_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
+  dea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/singlecell"
+  modelling_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  n_times: 20
+  dea_padj_threshold: 0.05
+---
+
+::: callout-note
+In the script we are building glmnet model comparing ICE vs wt organoid data
+
+Organoid dataset: The model was built using only neuronal populations comparing ICE versus wt. We only use iN1 as it is the biggest cluster of inhibitory neurons.
+
+I tested elasticnet regularization at different values of alpha but seems like simple Lasso (alpha=1) is the one that minimizes MSE the most.
+
+**What this script does:** trains binomial glmnet models (ICE vs wt classifiers) on
+organoid single-cell expression data, separately for COp1_10w and COp1_4m, and separately
+per celltype (Astrocytes, iN1, exN). Genes going into each model are pre-selected from
+the corresponding single-cell DEA results (`03_organoid_Analysis_singleCell_Level.qmd`
+output). Each model is trained/evaluated across `n_times` random train/test splits,
+with CV error, ROC/AUC, and gene-coefficient-stability diagnostics for each.
+:::
+
+# Setup
+
+```{r setup, tags=c(), warning=FALSE,message=FALSE}
+options(future.globals.maxSize = 8000 * 1024^2)
+suppressMessages({
+  library(Seurat)
+  library(caret)
+  library(scater)
+  library(dplyr)
+  library(purrr)
+  library(parallel)
+  library(ggpubr)
+  library(ggplot2)
+  library(stringr)
+  library(magrittr)
+  library(glmnet)
+  library(edgeR)
+  library(clusterExperiment)
+  library(ggVennDiagram)
+  library(pROC)
+})
+source(params$helper_functions_path)
+
+object_storage_path = params$object_storage_path
+DEA_results_path = params$dea_results_path
+modelling_results_path = params$modelling_results_path
+dir.create(modelling_results_path, recursive = TRUE, showWarnings = FALSE)
+
+# How many models to train with different train/test splits
+n_times = params$n_times
+```
+
+# Helper functions for this script
+
+```{r ml-helper-functions, warning=FALSE, message=FALSE}
+#' Select genes for the model from a single-cell DEA "perCT" results table
+#' @param comparison_values one or more values of the 'comparison' column to keep
+#'   (e.g. "iN1_ICE_vs_wt", or c("Astrocytes1_ICE_vs_wt","Astrocytes2_ICE_vs_wt"))
+select_dea_genes = function(dea_csv_path, comparison_values, padj_threshold = params$dea_padj_threshold) {
+  read.csv(dea_csv_path, row.names = 1) %>%
+    filter(p_val_adj < padj_threshold) %>%
+    filter(comparison %in% comparison_values, gene != "p23031-mCherry") %>%
+    pull(gene) %>%
+    unique()
+}
+
+#' Train a binomial glmnet ICE-vs-wt classifier on a Seurat subset, restricted to
+#' the given genes, across n_times random train/test splits
+train_organoid_glmnet = function(SO_subset, genenames_model, n_times) {
+  data = GetAssayData(SO_subset[genenames_model, ], assay = "RNA", layer = "data") %>% t() %>% as.data.frame()
+  data$label = SO_subset$phenotype
+  train_glmnet_model(df = data, model_family = "binomial", metadata = SO_subset@meta.data, n_times = n_times)
+}
+
+#' CV AUC (with SD) across training seeds
+plot_cv_auc_across_seeds = function(lst_predictions, title) {
+  df = lapply(lst_predictions$lst, function(x) x$model_params[c("lambda.min", "AUC_cv", "AUC_cv_sd", "seed")]) %>%
+    do.call(rbind.data.frame, .) %>%
+    mutate(seed = as.character(seed))
+
+  ggplot(df, aes(x = seed, y = AUC_cv, color = lambda.min)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = AUC_cv - AUC_cv_sd, ymax = AUC_cv + AUC_cv_sd)) +
+    ggtitle(title)
+}
+
+#' ROC curve per training seed (overlaid) + per-seed AUC summary table
+#' precision - How many classified cells out of the predictions are ICE?
+#' recall - How many positively predicted cells are ICE?
+plot_roc_by_seed = function(lst_predictions, title) {
+  df = lapply(lst_predictions$lst, function(x) x$predictions[c("pred", "seed", "phenotype")]) %>%
+    do.call(rbind.data.frame, .)
+
+  seeds = unique(df$seed)
+
+  # Build one tidy data.frame of ROC curve points + per-seed AUC, instead of plotting
+  # each seed as a separate base-graphics call with its own legend entry
+  roc_data = lapply(seeds, function(seed_i) {
+    roc_obj = roc(df$phenotype[df$seed == seed_i], df$pred[df$seed == seed_i], quiet = TRUE)
+    data.frame(
+      seed = seed_i,
+      specificity = roc_obj$specificities,
+      sensitivity = roc_obj$sensitivities,
+      auc = as.numeric(auc(roc_obj))
+    )
+  }) %>% do.call(rbind, .)
+
+  auc_summary = roc_data %>% distinct(seed, auc)
+  mean_auc = mean(auc_summary$auc)
+  sd_auc = sd(auc_summary$auc)
+
+  p = ggplot(roc_data, aes(x = 1 - specificity, y = sensitivity, group = seed, color = auc)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray70") +
+    geom_path(linewidth = 0.6, alpha = 0.7) +
+    scale_color_gradientn(colors = c("#7FB3D5", "#4C72B0", "#E8927C"), name = "AUC") +
+    annotate("text", x = 0.55, y = 0.08,
+             label = paste0("Mean AUC = ", round(mean_auc, 3), " \u00b1 ", round(sd_auc, 3)),
+             size = 4.5, fontface = "bold", hjust = 0) +
+    labs(title = title, x = "1 - Specificity (False Positive Rate)", y = "Sensitivity (True Positive Rate)") +
+    coord_equal() +
+    theme_minimal(base_size = 13) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14, hjust = 0.5, margin = margin(b = 10)),
+      panel.grid.minor = element_blank(),
+      legend.position = "right"
+    )
+
+  print(p)
+
+  data.frame(Seed = seeds, AUC = round(auc_summary$auc, 3))
+}
+
+#' AUC across the lambda regularization path (top axis = number of nonzero-coef genes)
+plot_lambda_auc = function(lst_predictions, title) {
+  plot(lst_predictions$cvfit)
+  title(main = title, line = 2.5)
+}
+
+#' Gene-coefficient stability across training seeds: save the full coefficient table,
+#' then plot mean +/- SD coefficient for the most frequently/strongly selected genes.
+#' The model has ICE as baseline and predicts wt: positive coefficients favor ICE
+#' classification, negative favor wt.
+plot_coef_stability = function(lst_predictions, output_txt_path, title, selection_freq_threshold = 10, top_n = 50) {
+  coefs_org = lapply(lst_predictions$lst, function(x) x$coeffs$gene_imp) %>%
+    do.call(cbind.data.frame, .)
+  colnames(coefs_org) = names(lst_predictions$lst)
+  coefs_org = coefs_org[rowMeans(coefs_org) != 0, ] %>% mutate(mean = rowMeans(.))
+  coefs_org = coefs_org[-1, ] %>% tibble::rownames_to_column("gene") # remove intercept
+
+  write.table(coefs_org, output_txt_path)
+
+  coef_df = coefs_org %>% select(-mean) %>% tibble::column_to_rownames("gene")
+  summary_df = data.frame(
+    gene = rownames(coef_df),
+    selection_freq = rowSums(coef_df != 0),
+    mean_coef = rowMeans(coef_df),
+    sd_coef = apply(coef_df, 1, sd)
+  ) %>%
+    filter(selection_freq >= selection_freq_threshold) %>%
+    arrange(desc(selection_freq), desc(abs(mean_coef))) %>%
+    slice_head(n = top_n)
+
+  print(
+    ggplot(summary_df, aes(x = reorder(gene, mean_coef), y = mean_coef)) +
+      geom_errorbar(aes(ymin = mean_coef - sd_coef, ymax = mean_coef + sd_coef), width = 0.2, color = "gray60", alpha = 0.7) +
+      geom_point(color = "gray20", size = 2.5) +
+      coord_flip() +
+      theme_minimal() +
+      labs(title = title, subtitle = "Top genes ranked by Coefficient", x = "Gene", y = "Average Coefficient")
+  )
+
+  coefs_org
+}
+```
+
+# Organoid dataset - COp1_10w
+
+```{r load_data_COp1_10w}
+harmonized_seurat_org = readRDS(file.path(object_storage_path , "SO_integratedHarmony_alldatasetsTogether_organoids.RDS"))
+
+DefaultAssay(harmonized_seurat_org) = "RNA"
+
+
+harmonized_seurat_org_astrocytes = subset(harmonized_seurat_org, Celltype %in% c("Astrocytes1","Astrocytes2") & Protocol_maturation_stage == "COp1_10w")
+
+# We select only 4dpi datasets for building model and predictions.
+harmonized_seurat_org %<>% subset(., Protocol_maturation_stage == "COp1_10w" & Celltype %in% c("exN","iN1"))
+
+###### remove cells that are FACS+ but mCh- / FACS- but mCh+ cells and remove mCherry from gene pool
+harmonized_seurat_org = harmonized_seurat_org[!grepl("p23031-mCherry", rownames(harmonized_seurat_org), ignore.case = T),!harmonized_seurat_org$facsP_mChN_cells & !harmonized_seurat_org$facsN_mChP_cells]
+
+# split SO into iN and exN
+harmonized_seurat_org_iN = subset(harmonized_seurat_org, Celltype == "iN1")
+harmonized_seurat_org_exN = subset(harmonized_seurat_org, Celltype == "exN")
+```
+
+::: panel-tabset
+## GLMNET - Astrocytes
+
+```{r global_model_COp1_10w_astrocytes, results='hide', warning=FALSE,message=FALSE, fig.height=12, fig.width=10}
+genenames_model = select_dea_genes(
+  file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_10w_perCT_organoids.csv"),
+  c("Astrocytes1_ICE_vs_wt", "Astrocytes2_ICE_vs_wt")
+)
+lst_predictions = train_organoid_glmnet(harmonized_seurat_org_astrocytes, genenames_model, n_times)
+```
+
+## Error plots - Astrocytes
+
+```{r, tags=c(), fig.height=7, fig.width=7, message=FALSE,warning=FALSE}
+plot_cv_auc_across_seeds(lst_predictions, "AUC of CV with SD | COp1_10w | Astr")
+```
+
+## Predict test_organoids - Astrocytes
+
+```{r, tags=c(), fig.height=8, fig.width=15, message=FALSE,warning=FALSE}
+plot_roc_by_seed(lst_predictions, "ROC Curves by Seed | COp1_10w | Astr")
+```
+
+## AUC across lambda - Astrocytes
+
+**Top legend is the number of features with nonzero coefficients**
+
+```{r, tags=c()}
+plot_lambda_auc(lst_predictions, "Top axis - amount of genes after regularization | COp1_10w | Astr")
+```
+
+## GLMNET - iN
+
+```{r global_model_COp1_10w_iN, results='hide', warning=FALSE,message=FALSE, fig.height=12, fig.width=10}
+genenames_model = select_dea_genes(
+  file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_10w_perCT_organoids.csv"), "iN1_ICE_vs_wt"
+)
+lst_predictions = train_organoid_glmnet(harmonized_seurat_org_iN, genenames_model, n_times)
+```
+
+## Error plots - iN
+
+```{r, tags=c(), fig.height=7, fig.width=7, message=FALSE,warning=FALSE}
+plot_cv_auc_across_seeds(lst_predictions, "AUC of CV with SD | COp1_10w | IN")
+```
+
+## Predict test_organoids - iN
+
+```{r, tags=c(), fig.height=8, fig.width=15, message=FALSE,warning=FALSE}
+plot_roc_by_seed(lst_predictions, "ROC Curves by Seed | COp1_10w | IN")
+```
+
+## AUC across lambda - iN
+
+**Top legend is the number of features with nonzero coefficients**
+
+```{r, tags=c()}
+plot_lambda_auc(lst_predictions, "Top axis - amount of genes after regularization | COp1_10w | IN")
+```
+
+## coefs - iN
+
+**The model has ICE as baseline and predicts wt. This means that positive coefficients are in favor of ICE classification while negative are in favor of predicting wt**
+
+```{r, tags=c(), fig.height=7, fig.width=7}
+coefs_org = plot_coef_stability(
+  lst_predictions, file.path(modelling_results_path , "coefs_glmnet_organoids_COp1_10w_iN_acrossSeeds.txt"),
+  paste0("Feature Stability across ", n_times, " Seeds | COp1_10w | IN"), selection_freq_threshold = 10
+)
+```
+
+## GLMNET - exN
+
+```{r global_model_COp1_10w_exN, results='hide', warning=FALSE,message=FALSE, fig.height=12, fig.width=10}
+genenames_model = select_dea_genes(
+  file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_10w_perCT_organoids.csv"), "exN_ICE_vs_wt"
+)
+lst_predictions = train_organoid_glmnet(harmonized_seurat_org_exN, genenames_model, n_times)
+```
+
+## Error plots - exN
+
+```{r, tags=c(), fig.height=7, fig.width=7, message=FALSE,warning=FALSE}
+plot_cv_auc_across_seeds(lst_predictions, "AUC of CV with SD | COp1_10w | EN")
+```
+
+## Predict test_organoids - exN
+
+```{r, tags=c(), fig.height=8, fig.width=15, message=FALSE,warning=FALSE}
+plot_roc_by_seed(lst_predictions, "ROC Curves by Seed | COp1_10w | EN")
+```
+
+## AUC across lambda - exN
+
+**Top legend is the number of features with nonzero coefficients**
+
+```{r, tags=c()}
+plot_lambda_auc(lst_predictions, "Top axis - amount of genes after regularization | COp1_10w | EN")
+```
+
+## coefs - exN
+
+**The model has ICE as baseline and predicts wt. This means that positive coefficients are in favor of ICE classification while negative are in favor of predicting wt**
+
+```{r, tags=c(), fig.height=7, fig.width=7}
+coefs_org = plot_coef_stability(
+  lst_predictions, file.path(modelling_results_path , "coefs_glmnet_organoids_COp1_10w_exN_acrossSeeds.txt"),
+  paste0("Feature Stability across ", n_times, " Seeds | COp1_10w | EN"), selection_freq_threshold = 10
+)
+```
+:::
+
+# Organoid dataset - COp1_4m
+
+```{r load_data_COp1_4m}
+harmonized_seurat_org = readRDS(file.path(object_storage_path , "SO_integratedHarmony_alldatasetsTogether_organoids.RDS"))
+DefaultAssay(harmonized_seurat_org) = "RNA"
+
+# We select only 4dpi datasets for building model and predictions.
+harmonized_seurat_org %<>% subset(., Protocol_maturation_stage == "COp1_4m" & Celltype %in% c("exN","iN1"))
+
+###### remove cells that are FACS+ but mCh- / FACS- but mCh+ cells and remove mCherry from gene pool
+harmonized_seurat_org = harmonized_seurat_org[!grepl("p23031-mCherry", rownames(harmonized_seurat_org), ignore.case = T),!harmonized_seurat_org$facsP_mChN_cells & !harmonized_seurat_org$facsN_mChP_cells]
+
+# split SO into iN and exN
+harmonized_seurat_org_iN = subset(harmonized_seurat_org, Celltype == "iN1")
+harmonized_seurat_org_exN = subset(harmonized_seurat_org, Celltype == "exN")
+```
+
+::: panel-tabset
+## GLMNET - iN
+
+```{r global_model_COp1_4m_iN, results='hide', warning=FALSE,message=FALSE, fig.height=12, fig.width=10}
+genenames_model = select_dea_genes(
+  file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_4m_perCT_organoids.csv"), "iN1_ICE_vs_wt"
+)
+lst_predictions = train_organoid_glmnet(harmonized_seurat_org_iN, genenames_model, n_times)
+```
+
+## Error plots - iN
+
+```{r, tags=c(), fig.height=7, fig.width=7, message=FALSE,warning=FALSE}
+plot_cv_auc_across_seeds(lst_predictions, "AUC of CV with SD | COp1_4m | IN")
+```
+
+## Predict test_organoids - iN
+
+```{r, tags=c(), fig.height=8, fig.width=15, message=FALSE,warning=FALSE}
+plot_roc_by_seed(lst_predictions, "ROC Curves by Seed | COp1_4m | IN")
+```
+
+## AUC across lambda - iN
+
+**Top legend is the number of features with nonzero coefficients**
+
+```{r, tags=c()}
+plot_lambda_auc(lst_predictions, "Top axis - amount of genes after regularization | COp1_4m | IN")
+```
+
+## coefs - iN
+
+**The model has ICE as baseline and predicts wt. This means that positive coefficients are in favor of ICE classification while negative are in favor of predicting wt**
+
+```{r, tags=c(), fig.height=7, fig.width=7}
+coefs_org = plot_coef_stability(
+  lst_predictions, file.path(modelling_results_path , "coefs_glmnet_organoids_COp1_4m_iN_acrossSeeds.txt"),
+  paste0("Feature Stability across ", n_times, " Seeds | COp1_4m | IN"), selection_freq_threshold = 10
+)
+```
+
+## GLMNET - exN
+
+```{r global_model_COp1_4m_exN, results='hide', warning=FALSE,message=FALSE, fig.height=12, fig.width=10}
+genenames_model = select_dea_genes(
+  file.path(DEA_results_path , "DEA_ICE_vs_wt_COp1_4m_perCT_organoids.csv"), "exN_ICE_vs_wt"
+)
+lst_predictions = train_organoid_glmnet(harmonized_seurat_org_exN, genenames_model, n_times)
+```
+
+## Error plots - exN
+
+```{r, tags=c(), fig.height=7, fig.width=7, message=FALSE,warning=FALSE}
+plot_cv_auc_across_seeds(lst_predictions, "AUC of CV with SD | COp1_4m | EN")
+```
+
+## Predict test_organoids - exN
+
+```{r, tags=c(), fig.height=8, fig.width=15, message=FALSE,warning=FALSE}
+plot_roc_by_seed(lst_predictions, "ROC Curves by Seed | COp1_4m | EN")
+```
+
+## AUC across lambda - exN
+
+**Top legend is the number of features with nonzero coefficients**
+
+```{r, tags=c()}
+plot_lambda_auc(lst_predictions, "Top axis - amount of genes after regularization | COp1_4m | EN")
+```
+
+## coefs - exN
+
+**The model has ICE as baseline and predicts wt. This means that positive coefficients are in favor of ICE classification while negative are in favor of predicting wt**
+
+```{r, tags=c(), fig.height=7, fig.width=7}
+coefs_org = plot_coef_stability(
+  lst_predictions, file.path(modelling_results_path , "coefs_glmnet_organoids_COp1_4m_exN_acrossSeeds.txt"),
+  paste0("Feature Stability across ", n_times, " Seeds | COp1_4m | EN"), selection_freq_threshold = 10
+)
+```
+:::
+
+# sessioninfo
+
+```{r}
+sessionInfo()
+```

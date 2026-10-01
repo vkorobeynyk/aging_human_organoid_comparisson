@@ -1,0 +1,328 @@
+---
+title: "ICE Annina 10x sequencing analysis - Analysis of human data"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  metacell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
+  dea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results"
+  gsea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/GSEA_analysis"
+  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  n_top_genes_per_direction: 2
+  n_gsea_pathways: 150
+---
+
+::: callout-note
+**What this script does:** loads the metacell-level `SingleCellExperiment` objects
+(Inhibitory and Excitatory neurons) produced by `01_human_Processing.qmd`, then for
+each cell type — and for the two combined — checks how much of the variance in
+expression is explained by Age and other covariates (PMI, Sex, Diagnosis,
+Sample_Source, Individual_ID), runs a metacell-level DESeq2 differential expression
+analysis of Age (controlling for Diagnosis, Sample_Source, Sex, and Celltype where
+relevant), and visualizes expression of the top age-associated genes. The resulting
+DEA marker tables are then used to run GSEA against GO Biological Process terms,
+producing reduced/clustered GO-term treemaps and saved marker/pathway tables that
+feed into the cross-dataset (organoid vs. human) comparison later in the project.
+:::
+
+# Setup
+
+```{r setup, tags=c(), warning=FALSE, message=FALSE}
+options(future.globals.maxSize = 8000 * 1024^2)
+suppressMessages({
+  library(Seurat)
+  library(harmony)
+  library(scater)
+  library(caret)
+  library(dplyr)
+  library(parallel)
+  library(ggpubr)
+  library(ggplot2)
+  library(Matrix)
+  library(stringr)
+  library(magrittr)
+  library(EnhancedVolcano)
+  library(glmnet)
+  library(genekitr)
+  library(geneset)
+  library(DESeq2)
+  library(pheatmap)
+  library(tidyr)
+  library(ggVennDiagram)
+  library(sva)
+  library(rrvgo)
+})
+source(params$helper_functions_path)
+source(params$qc_pipeline_functions_path)
+dir.create(params$dea_output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(params$gsea_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+gs = geneset::getGO(org = "human", ont = "bp")
+```
+
+# Load data
+
+```{r load-metacells, warning=FALSE, message=FALSE, results = 'hide'}
+metacell_sce_IN = readRDS(file.path(params$metacell_dir, "metacell_sce_IN_human.RDS"))
+metacell_sce_EN = readRDS(file.path(params$metacell_dir, "metacell_sce_EN_human.RDS"))
+```
+
+# Helper functions for this script
+
+The DEA + diagnostic-plot workflow functions
+
+```{r dea-plot-functions, warning=FALSE, message=FALSE}
+#' Run variance-explained diagnostics + metacell-level DESeq2 DEA, save markers, plot MA
+#'
+#' @param sce SingleCellExperiment of metacells
+#' @param design_formula DESeq2 design formula
+#' @param contrast passed to metacell_DESeq2_DEA
+#' @param organism "human" or "organoid", passed to metacell_DESeq2_DEA
+#' @param markers_csv_path where to write the DEA markers table
+#' @param variance_df optional data.frame of covariates for getVarianceExplained/
+#'   plotExplanatoryVariables; skipped if NULL (not run for the merged IN|EN analysis,
+#'   matching the original design)
+#' @return list(markers = ..., DESeq2_lst = ...)
+run_metacell_dea = function(sce, design_formula, contrast, organism,
+                             markers_csv_path, variance_df = NULL) {
+
+  if (!is.null(variance_df)) {
+    getVarianceExplained(sce, variables = variance_df) %>%
+      plotExplanatoryVariables() %>%
+      print()
+  }
+
+  sce$Age = as.numeric(sce$Age)
+
+  DESeq2_lst = metacell_DESeq2_DEA(
+    sce = sce, phenotype_column = "Age", dataset_column = "Individual_ID",
+    design_formula = design_formula, contrast = contrast, organism = organism
+  )
+
+  # Sample correlation heatmap, annotated by Age/diagnosis/sample source
+  print(DESeq2_lst$heatmap)
+  
+  markers = DESeq2_lst$markers %>% filter(if_all(everything(), ~ !is.na(.)))
+  write.csv(markers, markers_csv_path)
+
+  DESeq2::plotMA(DESeq2_lst$res)
+
+  list(markers = markers, DESeq2_lst = DESeq2_lst)
+}
+
+#' Plot VST-normalized expression vs Age for the top up/down DEA genes,
+#' colored by each covariate in color_by_vars (one plot per covariate)
+plot_top_age_genes = function(markers, DESeq2_lst, color_by_vars, n_top_genes) {
+
+  top_down = markers %>% arrange(avg_log2FC) %>% dplyr::slice(1:n_top_genes) %>% pull(gene)
+  top_up   = markers %>% arrange(desc(avg_log2FC)) %>% dplyr::slice(1:n_top_genes) %>% pull(gene)
+  genes = c(top_down, top_up)
+
+  expr = assay(DESeq2_lst$vst_transformed_deseq2)  # genes x samples
+  dds  = DESeq2_lst$dds
+
+  df = expr[genes, , drop = FALSE] %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("gene") %>%
+    pivot_longer(-gene, names_to = "sample", values_to = "expression") %>%
+    left_join(
+      as.data.frame(colData(dds)) %>% tibble::rownames_to_column("sample"),
+      by = "sample"
+    )
+
+  for (covariate in color_by_vars) {
+    p = ggplot(df, aes(x = Age, y = expression, color = .data[[covariate]])) +
+      geom_jitter(width = 0.2, size = 1.5, alpha = 0.6) +
+      facet_wrap(~ gene, scales = "free_y") +
+      theme_minimal() +
+      labs(y = "VST normalized expression") +
+      ggtitle(paste0(n_top_genes, " down / ", n_top_genes,
+                      " up genes changing with age, colored by ", covariate))
+    print(p)
+  }
+}
+
+#' Run GSEA on a saved DEA markers table, save results, generate reduced-GO treemaps
+run_gsea_workflow = function(markers_csv_path, gs, n_pathways, title_label,
+                              gsea_rds_path, neg_txt_path, pos_txt_path) {
+
+  markers = read.csv(markers_csv_path, row.names = 1)
+  gsea = gsea_analysis(markers = markers, cluster = "trending clusters", gs = gs,
+                        n_pathways = n_pathways, plot_type = "bar")
+
+  if (is.list(gsea)) {
+    saveRDS(gsea, gsea_rds_path)
+    lst = plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = title_label)
+    write.table(lst$neg, neg_txt_path, row.names = FALSE, quote = FALSE)
+    write.table(lst$pos, pos_txt_path, row.names = FALSE, quote = FALSE)
+  }
+
+  gsea
+}
+```
+
+# MDS plot / Var explained / DEA
+
+**Here we are trying to understand if Age is a variable that can explain the variability in the data**
+
+::: panel-tabset
+## IN
+
+```{r MDS_DEA_iN, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+variance_df_IN = data.frame(
+  Age = metacell_sce_IN$Age,
+  PMI = metacell_sce_IN$PMI,
+  Sex = metacell_sce_IN$Sex,
+  Diagnosis = metacell_sce_IN$Diagnosis,
+  Sample_Source = metacell_sce_IN$Sample_Source,
+  Individual_ID = metacell_sce_IN$Individual_ID
+)
+
+dea_IN = run_metacell_dea(
+  sce = metacell_sce_IN,
+  design_formula = as.formula("~ Diagnosis + Sample_Source + Sex + Age"),
+  contrast = "Age",
+  organism = "human",
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_metacell_iN_old_vs_young.csv"),
+  variance_df = variance_df_IN
+)
+
+plot_top_age_genes(
+  markers = dea_IN$markers, DESeq2_lst = dea_IN$DESeq2_lst,
+  color_by_vars = c("Sample_Source", "Sex", "Diagnosis"),
+  n_top_genes = params$n_top_genes_per_direction
+)
+```
+
+## EN
+
+```{r MDS_DEA_exN, warning=FALSE, message=FALSE, results = 'hide', fig.height=10, fig.width=10}
+variance_df_EN = data.frame(
+  Age = metacell_sce_EN$Age,
+  PMI = metacell_sce_EN$PMI,
+  Sex = metacell_sce_EN$Sex,
+  Diagnosis = metacell_sce_EN$Diagnosis,
+  Sample_Source = metacell_sce_EN$Sample_Source,
+  Individual_ID = metacell_sce_EN$Individual_ID
+)
+
+dea_EN = run_metacell_dea(
+  sce = metacell_sce_EN,
+  design_formula = as.formula("~ Diagnosis + Sample_Source + Sex + Age"),
+  contrast = "Age",
+  organism = "human",
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_metacell_exN_old_vs_young.csv"),
+  variance_df = variance_df_EN
+)
+
+plot_top_age_genes(
+  markers = dea_EN$markers, DESeq2_lst = dea_EN$DESeq2_lst,
+  color_by_vars = c("Sample_Source", "Sex", "Diagnosis"),
+  n_top_genes = params$n_top_genes_per_direction
+)
+```
+
+## IN | EN
+
+Merge both cell types and perform similar analysis as above
+
+```{r MDS_DEA_iN_exN, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+# Prefix cell IDs so IN/EN metacells don't collide when merged, and restrict to shared genes/colData
+sce_IN_for_merge = metacell_sce_IN
+sce_EN_for_merge = metacell_sce_EN
+colnames(sce_IN_for_merge) = paste0("IN_", colnames(sce_IN_for_merge))
+colnames(sce_EN_for_merge) = paste0("EN_", colnames(sce_EN_for_merge))
+
+common_genes = intersect(rownames(sce_IN_for_merge), rownames(sce_EN_for_merge))
+sce_IN_for_merge = sce_IN_for_merge[common_genes, ]
+sce_EN_for_merge = sce_EN_for_merge[common_genes, ]
+
+common_cols = intersect(names(colData(sce_IN_for_merge)), names(colData(sce_EN_for_merge)))
+colData(sce_IN_for_merge) = colData(sce_IN_for_merge)[, common_cols, drop = FALSE]
+colData(sce_EN_for_merge) = colData(sce_EN_for_merge)[, common_cols, drop = FALSE]
+
+merged_metacells_sce = cbind(sce_IN_for_merge, sce_EN_for_merge)
+
+variance_df_merged = data.frame(
+  Age = merged_metacells_sce$Age,
+  PMI = merged_metacells_sce$PMI,
+  Sex = merged_metacells_sce$Sex,
+  Diagnosis = merged_metacells_sce$Diagnosis,
+  Sample_Source = merged_metacells_sce$Sample_Source,
+  Individual_ID = merged_metacells_sce$Individual_ID,
+  CellType = merged_metacells_sce$CellType
+)
+
+dea_merged = run_metacell_dea(
+  sce = merged_metacells_sce,
+  design_formula = as.formula("~ Diagnosis + Sample_Source + Sex + CellType + Age"),
+  contrast = "Age",
+  organism = "human",
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_metacell_neurons_old_vs_young.csv"),
+  variance_df = variance_df_merged
+)
+```
+:::
+
+# Patient GSEA
+
+::: panel-tabset
+## IN
+
+```{r GSEA_IN_metacell, fig.height=10, fig.width=10}
+gsea_IN = run_gsea_workflow(
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_metacell_iN_old_vs_young.csv"),
+  gs = gs,
+  n_pathways = params$n_gsea_pathways,
+  title_label = "human metacell IN cells across age",
+  gsea_rds_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_iN_all_old.RDS"),
+  neg_txt_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_iN_downregulated_old.txt"),
+  pos_txt_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_iN_upregulated_old.txt")
+)
+```
+
+## EN
+
+```{r GSEA_EN_metacell, fig.height=10, fig.width=10}
+gsea_EN = run_gsea_workflow(
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_metacell_exN_old_vs_young.csv"),
+  gs = gs,
+  n_pathways = params$n_gsea_pathways,
+  title_label = "human metacell EN cells across age",
+  gsea_rds_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_exN_all_old.RDS"),
+  neg_txt_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_exN_downregulated_old.txt"),
+  pos_txt_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_exN_upregulated_old.txt")
+)
+```
+
+## IN | EN
+
+```{r GSEA_INEN_metacell, fig.height=10, fig.width=10}
+# NOTE: title fixed to reflect IN|EN (original script mistakenly reused the "EN" title here)
+gsea_merged = run_gsea_workflow(
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_metacell_neurons_old_vs_young.csv"),
+  gs = gs,
+  n_pathways = params$n_gsea_pathways,
+  title_label = "human metacell IN|EN cells across age",
+  gsea_rds_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_neurons.RDS"),
+  neg_txt_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_neurons_downregulated_old.txt"),
+  pos_txt_path = file.path(params$gsea_output_dir, "GOterms_metacell_old_vs_young_neurons_upregulated_old.txt")
+)
+```
+:::
+
+# sessioninfo
+
+```{r load_data}
+sessionInfo()
+```

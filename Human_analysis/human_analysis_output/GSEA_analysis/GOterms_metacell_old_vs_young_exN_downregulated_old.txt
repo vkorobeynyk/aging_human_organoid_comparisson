@@ -1,0 +1,9 @@
+go cluster parent score size term parentTerm termUniqueness termUniquenessWithinCluster termDispensability
+GO:1901739 1 GO:1901739 5.33295738086406 21 regulation of myoblast fusion regulation of myoblast fusion 0.19525 0.210428571428571 0
+GO:1901740 1 GO:1901739 4.94194138575621 3 negative regulation of myoblast fusion regulation of myoblast fusion 0.24425 0.252571428571429 0.901
+GO:0060142 1 GO:1901739 4.28533898572425 30 regulation of syncytium formation by plasma membrane fusion regulation of myoblast fusion 0.18925 0.207 0.976
+GO:0034242 1 GO:1901739 4.1829508026217 5 negative regulation of syncytium formation by plasma membrane fusion regulation of myoblast fusion 0.236875 0.247571428571429 0.881
+GO:0007520 1 GO:1901739 3.07278271493859 49 myoblast fusion regulation of myoblast fusion 0.193875 0.217571428571429 0.939
+GO:0000768 1 GO:1901739 2.2695878858917 63 syncytium formation by plasma membrane fusion regulation of myoblast fusion 0.18925 0.215571428571429 0.916
+GO:0006949 2 GO:0006949 2.19135985428026 67 syncytium formation syncytium formation 0.315125 1 0
+GO:0140253 1 GO:1901739 2.19135985428026 63 cell-cell fusion regulation of myoblast fusion 0.312875 0.216714285714286 0.914

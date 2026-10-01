@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=512G
+#SBATCH --time=24:00:00
+#SBATCH --output=logs/job_analysis_%j.out  # %j adds the job ID to the log name
+
+# Load environment
+module load miniforge3
+source activate ICE_Annina
+
+# Sequential Execution
+#echo "Running Step 1..."
+#quarto render 01_human_Processing.qmd --to html
+quarto render rf_leaveout_human.qmd --to html
+
+#echo "Running Step 2..."
+#quarto render 02_human_Analysis_metacell_Level.qmd --to html
+#quarto render 02b_human_Analysis_singleCell_Level.qmd --to html
+
+#echo "Running Step 3..."
+#quarto render 03_human_ML_predictions_human.qmd --to html
+
+#echo "Running Step 4..."
+#quarto render 04_human_ML_predictions_human_testOrganoids.qmd --to html
+
