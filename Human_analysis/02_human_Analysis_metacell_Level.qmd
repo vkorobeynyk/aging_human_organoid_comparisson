@@ -13,11 +13,11 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  metacell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
-  dea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results"
-  gsea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/GSEA_analysis"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
-  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  metacell_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output"
+  dea_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/DEA_results"
+  gsea_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/GSEA_analysis"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/general_qc_sc_pipeline_R_function.R"
   n_top_genes_per_direction: 2
   n_gsea_pathways: 150
 ---

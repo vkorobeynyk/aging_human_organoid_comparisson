@@ -13,13 +13,13 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  human_dea_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results"
-  human_glmnet_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/glmnet_human_output"
-  organoid_output_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/GSEA_results/singlecell/"
-  organoid_dea_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
-  organoid_glmnet_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
-  publication_plots_dir: "/home/vkorob/data/ICE_Annina/publication_plots"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  human_dea_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/DEA_results"
+  human_glmnet_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/glmnet_human_output"
+  organoid_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/GSEA_results/singlecell/"
+  organoid_dea_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
+  organoid_glmnet_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
+  publication_plots_dir: "/home/vkorob/data/aging_human_organoid_comparisson/publication_plots"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
   n_nonzero_coefs_threshold: 5
   n_top_genes_per_direction_circular: 1000
 ---

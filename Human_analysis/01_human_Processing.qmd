@@ -13,10 +13,10 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  data_dir: "/home/vkorob/data/ICE_Annina/human_data"
-  output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
-  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  data_dir: "/home/vkorob/data/aging_human_organoid_comparisson/human_data"
+  output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/general_qc_sc_pipeline_R_function.R"
   max_age: 80
   min_cells_per_patient: 500
   cells_to_aggregate: 15

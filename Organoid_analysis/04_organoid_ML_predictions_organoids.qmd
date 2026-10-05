@@ -13,10 +13,10 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  object_storage_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
-  dea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/singlecell"
-  modelling_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  object_storage_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output"
+  dea_results_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/DEA_results/singlecell"
+  modelling_results_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
   n_times: 20
   dea_padj_threshold: 0.05
 ---

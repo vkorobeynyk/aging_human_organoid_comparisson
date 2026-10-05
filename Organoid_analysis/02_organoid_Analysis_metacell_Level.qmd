@@ -13,11 +13,11 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  object_storage_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
-  gsea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/GSEA_results/metacells"
-  dea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
-  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
+  object_storage_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output"
+  gsea_results_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/GSEA_results/metacells"
+  dea_results_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/general_qc_sc_pipeline_R_function.R"
   amount_of_cells_to_aggregate: 15
   n_metacells_generate: 20
   gsea_n_pathways: 150

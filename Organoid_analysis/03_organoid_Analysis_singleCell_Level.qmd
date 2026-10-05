@@ -13,12 +13,12 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  object_storage_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
-  dea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/singlecell"
-  gsea_results_path: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/GSEA_results/singlecell"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
-  qc_pipeline_functions_path: "/home/vkorob/data/ICE_Annina/general_qc_sc_pipeline_R_function.R"
-  gsea_perCelltype_rds_dir: "/home/vkorob/data/ICE_Annina"
+  object_storage_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output"
+  dea_results_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/DEA_results/singlecell"
+  gsea_results_path: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/GSEA_results/singlecell"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/general_qc_sc_pipeline_R_function.R"
+  gsea_perCelltype_rds_dir: "/home/vkorob/data/aging_human_organoid_comparisson"
   gsea_n_pathways: 150
 ---
 

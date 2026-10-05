@@ -13,10 +13,10 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  metacell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
-  dea_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results"
-  glmnet_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/glmnet_human_output"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  metacell_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output"
+  dea_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/DEA_results"
+  glmnet_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/glmnet_human_output"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
   n_times: 20
   n_leftout_patients: 5
   min_gene_count: 10

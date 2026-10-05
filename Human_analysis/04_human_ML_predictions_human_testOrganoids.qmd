@@ -13,14 +13,14 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  metacell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
-  dea_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results"
-  human_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/glmnet_human_output"
-  organoid_metacell_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output"
-  organoid_dea_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
-  organoid_output_dir: "/home/vkorob/data/ICE_Annina/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
-  ineurons_path: "/home/vkorob/data/ICE_Annina/edgeR_dge_induced_Neurons.rds"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  metacell_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output"
+  dea_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/DEA_results"
+  human_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/glmnet_human_output"
+  organoid_metacell_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output"
+  organoid_dea_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/DEA_results/metacells"
+  organoid_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Organoid_analysis/organoid_analysis_output/glmnet_organoid_output"
+  ineurons_path: "/home/vkorob/data/aging_human_organoid_comparisson/edgeR_dge_induced_Neurons.rds"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
   min_gene_count: 10
   min_fraction_metacells_expressing: 0.05
   dea_padj_threshold: 0.05

@@ -13,10 +13,10 @@ format:
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
 params:
-  singlecell_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output"
-  dea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/DEA_results_singlecell"
-  gsea_output_dir: "/home/vkorob/data/ICE_Annina/Human_analysis/human_analysis_output/GSEA_results_singlecell"
-  helper_functions_path: "/home/vkorob/data/ICE_Annina/helper_functions.R"
+  singlecell_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output"
+  dea_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/DEA_results_singlecell"
+  gsea_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output/GSEA_results_singlecell"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
   n_gsea_pathways: 150
   min_fraction_cells_expressing: 0.02
 ---
