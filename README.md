@@ -13,7 +13,7 @@ aging_human_organoid_comparisson/
 ├── helper_functions.R                    # shared plotting / DEA / GSEA / modelling helpers
 ├── general_qc_sc_pipeline_R_function.R   # shared single-cell QC & processing functions
 ├── environment.yml                       # conda environment
-├── LICENSE                               # MIT licence
+├── LICENSE                               # GPL-3.0 licence
 ├── move_reports_to_docs.sh               # moves rendered .html reports into docs/
 ├── docs/                                 # rendered .html reports (GitHub Pages)
 ├── Organoid_analysis/
@@ -128,4 +128,6 @@ Manuscript in preparation.
 
 ## License
 
-The code in this repository is released under the [MIT License](LICENSE).
+Copyright (C) 2026 Vladyslav Korobeynyk.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License v3.0](LICENSE) (or, at your option, any later version). It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see the license for details.
