@@ -9,6 +9,8 @@ format:
     linkcolor: '#E5005C'
     df-print: kable
     embed-resources: true
+    fig-format: png   # default "retina" doubles figure resolution and file size
+    fig-dpi: 96
     code-fold: true
     code-block-bg: '#E6EEF0'
     code-block-border-left: '#3F698A'
