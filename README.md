@@ -6,6 +6,13 @@ Analysis code for comparing transcriptomic aging signatures between **ICE-treate
 
 ICE (Inducible Changes to the Epigenome; [Yang et al., Cell 2023](https://www.cell.com/cell/fulltext/S0092-8674(22)01570-7)) is used to induce an aged-like state in organoids. The central question is whether the gene-expression changes induced by ICE in organoids recapitulate those that occur with chronological age in human neurons. To address this, each dataset is analysed separately (QC, differential expression, GSEA, glmnet models), and the results are then compared across datasets — including training models on one dataset and testing them on the other.
 
+## Contact
+
+Vladyslav Korobeynyk, HIFO / DMLS, University of Zurich (Jessberger lab / Mark D. Robinson lab)
+
+## Generative AI statement
+Generative AI was used throughout this entire benchmark to make code nicer to read and more efficient. The entire logic of the benchmark was created by myself and I assume responsability of the content within this repo.
+
 ## Repository structure
 
 ```
@@ -130,4 +137,4 @@ Manuscript in preparation.
 
 Copyright (C) 2026 Vladyslav Korobeynyk.
 
-This program is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License v3.0](LICENSE) (or, at your option, any later version). It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; see the license for details.
+This program is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License v3.0](LICENSE).
