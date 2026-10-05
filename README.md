@@ -1,5 +1,7 @@
 # Aging signatures in ICE-aged brain organoids vs. the aging human brain
 
+**link for GitHub Pages https://vkorobeynyk.github.io/aging_human_organoid_comparisson/**
+
 Analysis code for comparing transcriptomic aging signatures between **ICE-treated ("aged") human brain organoids** and **natural human brain aging** using single-cell/single-nucleus RNA-seq.
 
 ICE (Inducible Changes to the Epigenome; [Yang et al., Cell 2023](https://www.cell.com/cell/fulltext/S0092-8674(22)01570-7)) is used to induce an aged-like state in organoids. The central question is whether the gene-expression changes induced by ICE in organoids recapitulate those that occur with chronological age in human neurons. To address this, each dataset is analysed separately (QC, differential expression, GSEA, glmnet models), and the results are then compared across datasets — including training models on one dataset and testing them on the other.
