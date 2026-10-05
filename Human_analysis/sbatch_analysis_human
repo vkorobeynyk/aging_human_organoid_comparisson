@@ -11,7 +11,6 @@ source activate ICE_Annina
 # Sequential Execution
 #echo "Running Step 1..."
 #quarto render 01_human_Processing.qmd --to html
-quarto render rf_leaveout_human.qmd --to html
 
 #echo "Running Step 2..."
 #quarto render 02_human_Analysis_metacell_Level.qmd --to html

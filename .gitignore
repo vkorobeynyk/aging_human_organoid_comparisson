@@ -2,7 +2,11 @@
 **/organoid_data/
 core
 edgeR_dge_induced_Neurons.rds
-Organoid_analysis/logs
-Human_analysis/logs
+# keep the (empty) logs folders, ignore the SLURM logs written into them
+Organoid_analysis/logs/*
+!Organoid_analysis/logs/.gitkeep
+Human_analysis/logs/*
+!Human_analysis/logs/.gitkeep
+compare_organoid_human/job_comparison_2datasets
 *.[rR][dD][sS]
-Organoid_analysis/03_organoid_Analysis_singleCell_Level.html
+docs/Organoid_analysis/03_organoid_Analysis_singleCell_Level.html
