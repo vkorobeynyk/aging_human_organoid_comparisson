@@ -11,7 +11,7 @@ ICE (Inducible Changes to the Epigenome; [Yang et al., Cell 2023](https://www.ce
 Vladyslav Korobeynyk, HIFO / DMLS, University of Zurich (Jessberger lab / Mark D. Robinson lab)
 
 ## Generative AI statement
-Generative AI was used throughout this entire benchmark to make code nicer to read and more efficient. The entire logic of the benchmark was created by myself and I assume responsability of the content within this repo.
+Generative AI was used throughout the project to generate parts of code | make code nicer to read | more efficient. The entire logic of the benchmark was created by myself and I assume responsability of the content within this repo.
 
 ## Repository structure
 
