@@ -1,0 +1,374 @@
+---
+title: "ICE Annina 10x sequencing analysis - Analysis of extended human data (pseudobulk)"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    fig-format: png   # default "retina" doubles figure resolution and file size
+    fig-dpi: 96
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  pseudobulk_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output"
+  dea_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output/DEA_results"
+  gsea_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output/GSEA_analysis"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
+  qc_pipeline_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/general_qc_sc_pipeline_R_function.R"
+  min_age: 30
+  max_age: 80
+  include_log_ncells: true
+  n_top_genes_per_direction: 2
+  n_gsea_pathways: 150
+---
+
+::: callout-note
+**What this script does:** loads the donor-level pseudobulk `SingleCellExperiment`
+objects of the extended human DLPFC lifespan cohort
+([Synapse syn52396927](https://www.synapse.org/Synapse:syn52396927)), in which all
+excitatory (EN) and all inhibitory (IN) neuron subtypes were summed per donor, donors
+with ≤ 10 cells of a given class were removed and LINC genes were dropped. For EN, IN
+and both combined it checks how much expression variance is explained by Age and other
+covariates, runs a DESeq2 differential expression analysis of Age (controlling for Sex,
+Ethnicity, Brain_bank and Control status, plus Celltype for the combined analysis),
+plots the top age-associated genes and runs GSEA against GO Biological Process terms.
+It mirrors `02_human_Analysis_metacell_Level.qmd`, but every sample here is one donor
+(true pseudobulk) instead of bootstrapped metacells.
+:::
+
+::: callout-important
+DESeq2 size factors (median-of-ratios) normalise for sequencing depth, which absorbs
+most of the effect of how many cells were summed per donor. The number of cells is
+therefore not in the model by default. It still influences noise and, because EN/IN are
+sums of subtypes, subtype composition. If `n_cells` correlates with Age (see the
+diagnostic plot below), set `include_log_ncells: true` to add `log(n_cells)` as a
+covariate.
+:::
+
+# Setup
+
+```{r setup, tags=c(), warning=FALSE, message=FALSE}
+options(future.globals.maxSize = 8000 * 1024^2)
+suppressMessages({
+  library(scater)
+  library(dplyr)
+  library(ggplot2)
+  library(Matrix)
+  library(magrittr)
+  library(genekitr)
+  library(geneset)
+  library(DESeq2)
+  library(pheatmap)
+  library(tidyr)
+  library(rrvgo)
+})
+source(params$helper_functions_path)
+source(params$qc_pipeline_functions_path)
+dir.create(params$dea_output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(params$gsea_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+gs = geneset::getGO(org = "human", ont = "bp")
+```
+
+# Load data
+
+```{r load-pseudobulk, warning=FALSE, message=FALSE}
+pseudobulk_sce_EN = readRDS(file.path(params$pseudobulk_dir, "pseudobulk_sce_EN_human_extended.RDS"))
+pseudobulk_sce_IN = readRDS(file.path(params$pseudobulk_dir, "pseudobulk_sce_IN_human_extended.RDS"))
+```
+
+# Helper functions for this script
+
+```{r helper-functions, warning=FALSE, message=FALSE}
+model_covariates = c("Sex", "Ethnicity", "Brain_bank", "Control")
+
+#' Prepare a pseudobulk SCE for DESeq2: age filter, factor covariates, drop donors with
+#' missing covariates, log-normalise (needed for getVarianceExplained)
+prepare_pseudobulk_sce = function(sce, covariates, min_age, max_age) {
+  n_start = ncol(sce)
+
+  sce$Age = as.numeric(sce$Age)
+  sce = sce[, !is.na(sce$Age) & sce$Age >= min_age & sce$Age < max_age]
+
+  # DESeq2 cannot handle NA in design variables
+  complete = Reduce(`&`, lapply(covariates, function(v) !is.na(colData(sce)[[v]])))
+  sce = sce[, complete]
+
+  for (v in covariates) colData(sce)[[v]] = droplevels(factor(colData(sce)[[v]]))
+  sce$log_n_cells = log(sce$n_cells)
+
+  # metacell_DESeq2_DEA() annotates its correlation heatmap with Diagnosis and
+  # Sample_Source; here Diagnosis = Control status, Sample_Source = Brain_bank
+  sce$Diagnosis = sce$Control
+  sce$Sample_Source = sce$Brain_bank
+
+  sce = sce[rowSums(counts(sce)) > 0, ]
+
+  # DESeq2 expects a dense integer count matrix
+  counts_dense = as.matrix(counts(sce))
+  stopifnot(all(counts_dense == round(counts_dense)))
+  storage.mode(counts_dense) = "integer"
+  counts(sce) = counts_dense
+
+  sce = logNormCounts(sce)
+
+  message(sprintf("%s: %d -> %d donors (age %g-%g, complete covariates)",
+                  paste(unique(sce$Celltype), collapse = "|"), n_start, ncol(sce), min_age, max_age))
+  sce
+}
+
+#' Build the DESeq2 design formula; Age is always the last term
+build_design = function(covariates, include_log_ncells) {
+  terms = c(covariates, if (include_log_ncells) "log_n_cells", "Age")
+  as.formula(paste("~", paste(terms, collapse = " + ")))
+}
+
+#' Variance-explained diagnostics + donor-level DESeq2 DEA of Age, save markers, plot MA
+run_pseudobulk_dea = function(sce, design_formula, markers_csv_path, variance_vars) {
+
+  # variance-explained diagnostic on donors with no missing value in these variables
+  variance_df = as.data.frame(colData(sce))[, variance_vars, drop = FALSE]
+  keep = stats::complete.cases(variance_df)
+  getVarianceExplained(sce[, keep], variables = variance_df[keep, , drop = FALSE]) %>%
+    plotExplanatoryVariables() %>%
+    print()
+
+  DESeq2_lst = metacell_DESeq2_DEA(
+    sce = sce, phenotype_column = "Age", dataset_column = "Brain_bank",
+    design_formula = design_formula, contrast = "Age", organism = "human"
+  )
+
+  print(DESeq2_lst$plt_phenotype)
+  print(DESeq2_lst$plt_dataset)
+  print(DESeq2_lst$heatmap)
+
+  markers = DESeq2_lst$markers %>% filter(if_all(everything(), ~ !is.na(.)))
+  write.csv(markers, markers_csv_path)
+
+  DESeq2::plotMA(DESeq2_lst$res)
+
+  list(markers = markers, DESeq2_lst = DESeq2_lst)
+}
+
+#' Plot VST-normalized expression vs Age for the top up/down DEA genes,
+#' colored by each covariate in color_by_vars (one plot per covariate)
+plot_top_age_genes = function(markers, DESeq2_lst, color_by_vars, n_top_genes) {
+
+  top_down = markers %>% arrange(avg_log2FC) %>% dplyr::slice(1:n_top_genes) %>% pull(gene)
+  top_up   = markers %>% arrange(desc(avg_log2FC)) %>% dplyr::slice(1:n_top_genes) %>% pull(gene)
+  genes = c(top_down, top_up)
+
+  expr = assay(DESeq2_lst$vst_transformed_deseq2)  # genes x samples
+  dds  = DESeq2_lst$dds
+
+  df = expr[genes, , drop = FALSE] %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("gene") %>%
+    pivot_longer(-gene, names_to = "sample", values_to = "expression") %>%
+    left_join(
+      as.data.frame(colData(dds)) %>% tibble::rownames_to_column("sample"),
+      by = "sample"
+    )
+
+  for (covariate in color_by_vars) {
+    p = ggplot(df, aes(x = Age, y = expression, color = .data[[covariate]])) +
+      geom_point(size = 1.5, alpha = 0.6) +
+      facet_wrap(~ gene, scales = "free_y") +
+      theme_minimal() +
+      labs(y = "VST normalized expression") +
+      ggtitle(paste0(n_top_genes, " down / ", n_top_genes,
+                     " up genes changing with age, colored by ", covariate))
+    print(p)
+  }
+}
+
+#' Run GSEA on a saved DEA markers table, save results, generate reduced-GO treemaps
+run_gsea_workflow = function(markers_csv_path, gs, n_pathways, title_label,
+                             gsea_rds_path, neg_txt_path, pos_txt_path) {
+
+  markers = read.csv(markers_csv_path, row.names = 1)
+  gsea = gsea_analysis(markers = markers, cluster = "trending clusters", gs = gs,
+                       n_pathways = n_pathways, plot_type = "bar")
+
+  if (is.list(gsea)) {
+    saveRDS(gsea, gsea_rds_path)
+    lst = plot_ReducedGOterms(gsea_df = gsea$gsea_df, title_label = title_label)
+    write.table(lst$neg, neg_txt_path, row.names = FALSE, quote = FALSE)
+    write.table(lst$pos, pos_txt_path, row.names = FALSE, quote = FALSE)
+  }
+
+  gsea
+}
+```
+
+# Data preparation
+
+```{r prepare-data, warning=FALSE, message=FALSE}
+pseudobulk_sce_EN = prepare_pseudobulk_sce(pseudobulk_sce_EN, model_covariates, params$min_age, params$max_age)
+pseudobulk_sce_IN = prepare_pseudobulk_sce(pseudobulk_sce_IN, model_covariates, params$min_age, params$max_age)
+
+design_formula = build_design(model_covariates, params$include_log_ncells)
+design_formula_merged = build_design(c(model_covariates, "Celltype"), params$include_log_ncells)
+design_formula
+
+variance_vars = c("Age", "PMI", "Sex", "Ethnicity", "Brain_bank", "Control", "log_n_cells") # only for diagnostic plots
+```
+
+## Donors and covariates
+
+```{r donor-overview, warning=FALSE, message=FALSE, fig.height=4, fig.width=9}
+donor_df = rbind(
+  as.data.frame(colData(pseudobulk_sce_EN))[, c("Individual_ID", "Celltype", "Age", "n_cells", "lib_size")],
+  as.data.frame(colData(pseudobulk_sce_IN))[, c("Individual_ID", "Celltype", "Age", "n_cells", "lib_size")]
+)
+
+table(Celltype = donor_df$Celltype)
+lapply(model_covariates, function(v) table(colData(pseudobulk_sce_EN)[[v]], useNA = "ifany")) %>%
+  setNames(model_covariates)
+
+# does the number of summed cells change with age? if so, consider include_log_ncells: true
+ggplot(donor_df, aes(x = Age, y = n_cells, colour = Celltype)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "loess", se = FALSE) +
+  scale_y_log10() +
+  facet_wrap(~ Celltype) +
+  labs(x = "Age (years)", y = "Cells per donor (log10)") +
+  theme_bw() + theme(legend.position = "none")
+
+sapply(split(donor_df, donor_df$Celltype), function(d) cor(d$Age, log(d$n_cells), method = "spearman"))
+```
+
+# Var explained / DEA
+
+**Here we are trying to understand if Age is a variable that can explain the variability in the data**
+
+::: panel-tabset
+## IN
+
+```{r DEA_IN, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+dea_IN = run_pseudobulk_dea(
+  sce = pseudobulk_sce_IN,
+  design_formula = design_formula,
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_pseudobulk_iN_age_human_extended.csv"),
+  variance_vars = variance_vars
+)
+
+plot_top_age_genes(
+  markers = dea_IN$markers, DESeq2_lst = dea_IN$DESeq2_lst,
+  color_by_vars = c("Brain_bank", "Sex", "Ethnicity", "Control"),
+  n_top_genes = params$n_top_genes_per_direction
+)
+```
+
+## EN
+
+```{r DEA_EN, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+dea_EN = run_pseudobulk_dea(
+  sce = pseudobulk_sce_EN,
+  design_formula = design_formula,
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_pseudobulk_exN_age_human_extended.csv"),
+  variance_vars = variance_vars
+)
+
+plot_top_age_genes(
+  markers = dea_EN$markers, DESeq2_lst = dea_EN$DESeq2_lst,
+  color_by_vars = c("Brain_bank", "Sex", "Ethnicity", "Control"),
+  n_top_genes = params$n_top_genes_per_direction
+)
+```
+
+## IN | EN
+
+Merge both cell types and perform the same analysis, with Celltype as an extra covariate.
+Each donor contributes up to two samples (IN and EN).
+
+```{r DEA_IN_EN, warning=FALSE, message=FALSE, results = 'hide', fig.height=8, fig.width=8}
+# prefix donor IDs so IN/EN samples don't collide, restrict to shared genes/colData
+sce_IN_for_merge = pseudobulk_sce_IN
+sce_EN_for_merge = pseudobulk_sce_EN
+colnames(sce_IN_for_merge) = paste0("IN_", colnames(sce_IN_for_merge))
+colnames(sce_EN_for_merge) = paste0("EN_", colnames(sce_EN_for_merge))
+
+common_genes = intersect(rownames(sce_IN_for_merge), rownames(sce_EN_for_merge))
+sce_IN_for_merge = sce_IN_for_merge[common_genes, ]
+sce_EN_for_merge = sce_EN_for_merge[common_genes, ]
+
+common_cols = intersect(names(colData(sce_IN_for_merge)), names(colData(sce_EN_for_merge)))
+colData(sce_IN_for_merge) = colData(sce_IN_for_merge)[, common_cols, drop = FALSE]
+colData(sce_EN_for_merge) = colData(sce_EN_for_merge)[, common_cols, drop = FALSE]
+
+# keep only counts; logcounts are recomputed on the merged object
+assays(sce_IN_for_merge) = assays(sce_IN_for_merge)["counts"]
+assays(sce_EN_for_merge) = assays(sce_EN_for_merge)["counts"]
+rowData(sce_IN_for_merge) = NULL
+rowData(sce_EN_for_merge) = NULL
+
+merged_pseudobulk_sce = cbind(sce_IN_for_merge, sce_EN_for_merge)
+merged_pseudobulk_sce$Celltype = factor(merged_pseudobulk_sce$Celltype)
+merged_pseudobulk_sce = logNormCounts(merged_pseudobulk_sce)
+
+dea_merged = run_pseudobulk_dea(
+  sce = merged_pseudobulk_sce,
+  design_formula = design_formula_merged,
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_pseudobulk_neurons_age_human_extended.csv"),
+  variance_vars = c(variance_vars, "Celltype")
+)
+```
+:::
+
+# GSEA
+
+::: panel-tabset
+## IN
+
+```{r GSEA_IN, fig.height=10, fig.width=10}
+gsea_IN = run_gsea_workflow(
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_pseudobulk_iN_age_human_extended.csv"),
+  gs = gs,
+  n_pathways = params$n_gsea_pathways,
+  title_label = "human extended pseudobulk IN across age",
+  gsea_rds_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_iN_all_human_extended.RDS"),
+  neg_txt_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_iN_downregulated_old_human_extended.txt"),
+  pos_txt_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_iN_upregulated_old_human_extended.txt")
+)
+```
+
+## EN
+
+```{r GSEA_EN, fig.height=10, fig.width=10}
+gsea_EN = run_gsea_workflow(
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_pseudobulk_exN_age_human_extended.csv"),
+  gs = gs,
+  n_pathways = params$n_gsea_pathways,
+  title_label = "human extended pseudobulk EN across age",
+  gsea_rds_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_exN_all_human_extended.RDS"),
+  neg_txt_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_exN_downregulated_old_human_extended.txt"),
+  pos_txt_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_exN_upregulated_old_human_extended.txt")
+)
+```
+
+## IN | EN
+
+```{r GSEA_IN_EN, fig.height=10, fig.width=10}
+gsea_merged = run_gsea_workflow(
+  markers_csv_path = file.path(params$dea_output_dir, "DEA_pseudobulk_neurons_age_human_extended.csv"),
+  gs = gs,
+  n_pathways = params$n_gsea_pathways,
+  title_label = "human extended pseudobulk IN|EN across age",
+  gsea_rds_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_neurons_all_human_extended.RDS"),
+  neg_txt_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_neurons_downregulated_old_human_extended.txt"),
+  pos_txt_path = file.path(params$gsea_output_dir, "GOterms_pseudobulk_age_neurons_upregulated_old_human_extended.txt")
+)
+```
+:::
+
+# sessioninfo
+
+```{r sessioninfo}
+sessionInfo()
+```

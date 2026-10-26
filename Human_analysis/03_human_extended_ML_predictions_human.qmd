@@ -1,0 +1,318 @@
+---
+title: "ICE Annina 10x sequencing analysis - ML predictions of extended human data"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    fig-format: png   # default "retina" doubles figure resolution and file size
+    fig-dpi: 96
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  pseudobulk_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output"
+  dea_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output/DEA_results"
+  glmnet_output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output/glmnet_human_extended_output"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
+  min_age: 30
+  max_age: 80
+  n_times: 20
+  min_gene_count: 10
+  min_fraction_samples_expressing: 0.05
+  top_n_genes_for_expression_plots: 6
+---
+
+::: callout-note
+In this script we are building glmnet model using gene expression as covariate to model donor's age
+
+**What this script does:** loads the donor-level pseudobulk `SingleCellExperiment`
+objects of the extended human DLPFC lifespan cohort produced by
+`01_human_extended_Processing.qmd` and the DEA tables from
+`02_human_extended_Analysis_pseudobulk_Level.qmd`, then for each cell type (IN, EN)
+trains a lasso (glmnet, gaussian family) model that predicts chronological Age from
+pseudobulk gene expression. The donors are split 80/20 into train/test sets, repeated
+across `n_times` random seeds; lambda is chosen by internal cross-validation on the
+training set. Predicted-vs-true-age plots, CV error plots, gene coefficient tables and
+feature-stability plots are produced and saved.
+
+* Each sample is one donor (no metacells), so every test set consists of donors the
+  model never saw. The leave-patients-out strategy of `03_human_ML_predictions_human.qmd`
+  (needed there because metacells of one patient could fall into both train and test
+  sets) is therefore not needed here.
+
+* Donors are filtered to the same age range as in the DEA notebook
+  (`min_age`–`max_age`; keep these params identical in both notebooks).
+
+* Gene selection for the model keeps genes with ≥ `min_gene_count` counts in at least
+  `min_fraction_samples_expressing` of donors.
+
+* The number of cells summed per donor explains a large share of expression variance
+  (see the DEA notebook). glmnet only sees expression, so predictions are also plotted
+  against `log_n_cells` to check that the model does not predict age through it.
+:::
+
+# Setup
+
+```{r setup, tags=c(), warning=FALSE, message=FALSE}
+options(future.globals.maxSize = 8000 * 1024^2)
+suppressMessages({
+  library(scater)
+  library(dplyr)
+  library(caret)
+  library(purrr)
+  library(ggpubr)
+  library(ggplot2)
+  library(magrittr)
+  library(glmnet)
+  library(knitr)
+  library(DT)
+})
+source(params$helper_functions_path)
+dir.create(params$glmnet_output_dir, recursive = TRUE, showWarnings = FALSE)
+
+set.seed(1)
+n_times = params$n_times
+```
+
+# Load data and params
+
+```{r load_data_human}
+#' Load one pseudobulk SCE, apply the age filter used in the DEA notebook, log-normalise
+#' and add the metadata column names expected by the shared glmnet helpers
+load_pseudobulk_sce = function(path, min_age, max_age) {
+  sce = readRDS(path)
+  sce$Age = as.numeric(sce$Age)
+  sce = sce[, !is.na(sce$Age) & sce$Age >= min_age & sce$Age < max_age]
+  sce = sce[rowSums(counts(sce)) > 0, ]
+  sce = logNormCounts(sce)
+
+  # build_seed_result() (helper_functions.R) attaches Sex/Diagnosis/Sample_Source to
+  # the predictions; here Diagnosis = Control status, Sample_Source = Brain_bank
+  sce$Diagnosis = factor(sce$Control)
+  sce$Sample_Source = factor(sce$Brain_bank)
+  sce$Sex = factor(sce$Sex)
+  sce$log_n_cells = log(sce$n_cells)
+  sce
+}
+
+# -----#
+# IN
+# -----#
+pseudobulk_sce_IN = load_pseudobulk_sce(
+  file.path(params$pseudobulk_dir, "pseudobulk_sce_IN_human_extended.RDS"), params$min_age, params$max_age
+)
+DEA_pseudobulk_IN = read.csv(file.path(params$dea_dir, "DEA_pseudobulk_iN_age_human_extended.csv"), row.names = 1)
+
+# -----#
+# EN
+# -----#
+pseudobulk_sce_EN = load_pseudobulk_sce(
+  file.path(params$pseudobulk_dir, "pseudobulk_sce_EN_human_extended.RDS"), params$min_age, params$max_age
+)
+DEA_pseudobulk_EN = read.csv(file.path(params$dea_dir, "DEA_pseudobulk_exN_age_human_extended.csv"), row.names = 1)
+
+c(IN_donors = ncol(pseudobulk_sce_IN), EN_donors = ncol(pseudobulk_sce_EN))
+summary(pseudobulk_sce_IN$Age); summary(pseudobulk_sce_EN$Age)
+```
+
+# Helper functions
+
+The modelling is run identically for IN and EN.
+
+```{r ml-helper-functions, warning=FALSE, message=FALSE}
+#' Keep genes with >= min_count counts in at least min_fraction_samples of donors
+#' Rationale: reduces noise/feature count before feeding into glmnet
+filter_genes_min_expression = function(sce, min_count = params$min_gene_count,
+                                       min_fraction_samples = params$min_fraction_samples_expressing) {
+  keep = rowSums(counts(sce) >= min_count) >= (min_fraction_samples * ncol(sce))
+  sce[keep, ]
+}
+
+#' Predicted vs. true age scatter + regression line + R^2
+#' color_by: optional column name in df to map to point color
+plot_pred_vs_age = function(df, color_by = NULL, title = "Predicted vs chronological Age per donor") {
+  if (is.null(color_by)) {
+    p = ggplot(df, aes(x = chronological_age, y = pred)) +
+      geom_point(color = "skyblue") +
+      geom_smooth(method = "lm", color = "black", linetype = "dashed") +
+      stat_regline_equation(aes(label = after_stat(rr.label)), color = "black", show.legend = FALSE)
+  } else if (is.numeric(df[[color_by]])) {
+    # continuous covariate (e.g. log_n_cells): colour gradient, single regression line
+    p = ggplot(df, aes(x = chronological_age, y = pred)) +
+      geom_point(aes(color = .data[[color_by]]), size = 1) +
+      geom_smooth(method = "lm", color = "black", linetype = "dashed") +
+      scale_color_viridis_c()
+  } else {
+    p = ggplot(df, aes(x = chronological_age, y = pred, color = .data[[color_by]])) +
+      geom_point(size = 0.75) +
+      geom_smooth(method = "lm", linetype = "dashed") + # one line per group (color inherited)
+      stat_regline_equation(aes(label = after_stat(rr.label)), show.legend = FALSE)
+  }
+  p +
+    labs(y = "Predicted Age", x = "True Age") +
+    ggtitle(title) +
+    theme_bw()
+}
+
+#' Prediction error (predicted - true age) vs number of cells per donor: if the model
+#' used cell number as a proxy for age, the error would trend with log_n_cells
+plot_error_vs_ncells = function(df) {
+  ggplot(df, aes(x = log_n_cells, y = pred - chronological_age)) +
+    geom_point(alpha = 0.6) +
+    geom_smooth(method = "lm", color = "black", linetype = "dashed") +
+    stat_cor(method = "spearman") +
+    labs(x = "log(number of cells per donor)", y = "Predicted - true Age") +
+    ggtitle("Prediction error vs number of cells") +
+    theme_bw()
+}
+
+#' CV MSE across training seeds, with the mean test-set MSE.
+plot_cv_mse_across_seeds = function(model_params_list, n_times, title = "MSE of CV") {
+  df = lapply(model_params_list, function(x) x[c("lambda.min", "MSE_cv", "MSE_cv_sd", "seed", "MSE_test")]) %>%
+    do.call(rbind.data.frame, .)
+
+  summary_row = data.frame(
+    lambda.min = mean(df$lambda.min),
+    MSE_cv = mean(df$MSE_test),
+    MSE_cv_sd = sd(df$MSE_test),
+    seed = "test_data_acrossSeeds"
+  )
+  df = rbind(df %>% select(!MSE_test), summary_row)
+  df$seed = factor(df$seed, levels = c(as.character(seq_len(n_times)), "test_data_acrossSeeds"))
+
+  ggplot(df, aes(x = seed, y = MSE_cv, color = lambda.min)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = MSE_cv - MSE_cv_sd, ymax = MSE_cv + MSE_cv_sd)) +
+    ggtitle(title)
+}
+
+#' Feature stability across seeds: how often + how strongly each gene was selected
+plot_feature_stability = function(coefs, n_times) {
+  coef_df = coefs %>% select(-mean)
+  summary_df = data.frame(
+    gene = rownames(coef_df),
+    selection_freq = rowSums(coef_df != 0),
+    mean_coef = rowMeans(coef_df),
+    sd_coef = apply(coef_df, 1, sd)
+  ) %>%
+    filter(selection_freq >= n_times / 2) %>%
+    arrange(desc(selection_freq), desc(abs(mean_coef))) %>%
+    slice_head(n = 50)
+
+  ggplot(summary_df, aes(x = reorder(gene, mean_coef), y = mean_coef)) +
+    geom_errorbar(aes(ymin = mean_coef - sd_coef, ymax = mean_coef + sd_coef),
+                  width = 0.2, color = "gray60", alpha = 0.7) +
+    geom_point(color = "gray20", size = 2.5) +
+    coord_flip() +
+    theme_minimal() +
+    labs(
+      title = paste0("Feature Stability across ", n_times, " Seeds"),
+      subtitle = paste0("Genes selected in at least half of the seeds, ranked by selection frequency and coefficient"),
+      x = "Gene", y = "Average Coefficient"
+    )
+}
+
+#' 80/20 train/test split over donors, repeated across n_times seeds
+run_glmnet_age_model = function(sce, n_times, label, output_dir, DEA_table, top_n_genes) {
+
+  sce = filter_genes_min_expression(sce)
+  logcounts_df = as.data.frame(t(as.matrix(logcounts(sce))))
+  logcounts_df$label = sce$Age
+  meta = colData(sce)
+
+  lst_predictions = train_glmnet_model(df = logcounts_df, model_family = "gaussian",
+                                       metadata = meta, n_times = n_times)
+
+  # Predicted vs true age (rownames of the predictions are the test donors)
+  df_pred = lapply(lst_predictions$lst, function(x) {
+    x$predictions %>% mutate(donor = rownames(x$predictions))
+  }) %>% do.call(rbind.data.frame, .)
+  df_pred$log_n_cells = meta[df_pred$donor, "log_n_cells"]
+
+  print(plot_pred_vs_age(df_pred))
+
+  # CV error across seeds
+  print(plot_cv_mse_across_seeds(lapply(lst_predictions$lst, `[[`, "model_params"), n_times))
+
+  # MSE across lambdas (regularization path, last seed)
+  plot(lst_predictions$cvfit)
+  title(main = "lambda regularization vs MSE", line = 2.5)
+
+  # Coefficients across seeds
+  coefs = lapply(lst_predictions$lst, function(x) x$coeffs$gene_imp) %>%
+    do.call(cbind.data.frame, .)
+  colnames(coefs) = names(lst_predictions$lst)
+  coefs = coefs[rowMeans(coefs) != 0, ] %>% mutate(mean = rowMeans(.))
+  coefs = coefs[rownames(coefs) != "(Intercept)", ] %>% round(2)  # remove intercept
+
+  print(datatable(coefs))
+  write.table(coefs, file.path(output_dir, paste0("coefs_glmnet_human_extended_", label, ".txt")))
+
+  # Predicted vs true age, colored by covariate
+  print(plot_pred_vs_age(df_pred, color_by = "sex"))
+  print(plot_pred_vs_age(df_pred, color_by = "diagnosis"))
+  print(plot_pred_vs_age(df_pred, color_by = "sample_source"))
+  print(plot_pred_vs_age(df_pred, color_by = "log_n_cells"))
+  print(plot_error_vs_ncells(df_pred))
+
+  # Feature stability across seeds
+  print(plot_feature_stability(coefs, n_times))
+
+  # Expression of top up/down genes across Age, by a few covariates
+  genes = unique(c(
+    head(rownames(coefs)[order(coefs$mean)], top_n_genes),
+    head(rownames(coefs)[order(coefs$mean, decreasing = TRUE)], top_n_genes)
+  ))
+  stopifnot(all(genes %in% rownames(sce)))
+
+  print(
+    plotExpression(sce, features = genes, x = "Age", ncol = 4, colour_by = "Sample_Source") +
+      geom_smooth(method = "lm")
+  )
+  print(datatable(DEA_table[intersect(genes, rownames(DEA_table)), ] %>% select(-gene) %>% round(4)))
+
+  print(
+    plotExpression(sce, features = genes, x = "Age", ncol = 4, colour_by = "Sex") +
+      geom_smooth(method = "lm")
+  )
+  print(
+    plotExpression(sce, features = genes, x = "Age", ncol = 4, colour_by = "log_n_cells") +
+      geom_smooth(method = "lm")
+  )
+
+  invisible(list(coefs = coefs, predictions = lst_predictions))
+}
+```
+
+# Age prediction
+
+::: panel-tabset
+## IN
+
+```{r modelling_IN, warning=FALSE, message=FALSE, fig.height=10, fig.width=10}
+result_IN = run_glmnet_age_model(
+  sce = pseudobulk_sce_IN, n_times = n_times, label = "IN", output_dir = params$glmnet_output_dir,
+  DEA_table = DEA_pseudobulk_IN, top_n_genes = params$top_n_genes_for_expression_plots
+)
+```
+
+## EN
+
+```{r modelling_EN, warning=FALSE, message=FALSE, fig.height=10, fig.width=10}
+result_EN = run_glmnet_age_model(
+  sce = pseudobulk_sce_EN, n_times = n_times, label = "EN", output_dir = params$glmnet_output_dir,
+  DEA_table = DEA_pseudobulk_EN, top_n_genes = params$top_n_genes_for_expression_plots
+)
+```
+:::
+
+# sessioninfo
+
+```{r sessioninfo}
+sessionInfo()
+```

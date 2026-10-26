@@ -1,0 +1,202 @@
+---
+title: "ICE Annina 10x sequencing analysis - Processing of extended human data (pseudobulk)"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    fig-format: png   # default "retina" doubles figure resolution and file size
+    fig-dpi: 96
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  data_dir: "/home/vkorob/data/aging_human_organoid_comparisson/human_data_extended"
+  input_file: "lifespan_pseudobulk.rds"
+  output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output"
+  min_cells_per_donor: 100
+---
+
+::: callout-note
+**What this script does:** loads the donor-level pseudobulk `SingleCellExperiment` of
+the human DLPFC lifespan cohort ([Synapse syn52396927](https://www.synapse.org/Synapse:syn52396927)),
+in which every assay is one cell (sub)type with counts already summed per donor. All
+excitatory neuron subtypes (`EN_*`) and all inhibitory neuron subtypes (`IN_*`) are
+summed per donor into one EN and one IN pseudobulk; all other cell types are dropped.
+For each class it records the number of cells summed per donor, keeps a reduced set of
+donor metadata (renamed where needed to match the original human pipeline), removes
+donors with ≤ `r params$min_cells_per_donor` cells and LINC genes, and saves one
+`SingleCellExperiment` per class (`pseudobulk_sce_EN_human_extended.RDS`,
+`pseudobulk_sce_IN_human_extended.RDS`) in `Human_analysis/human_extended_analysis_output/` for `02_human_extended_Analysis_pseudobulk_Level.qmd`.
+:::
+
+# Setup
+
+```{r setup, warning=FALSE, message=FALSE}
+suppressMessages({
+  library(SingleCellExperiment)
+  library(Matrix)
+  library(ggplot2)
+})
+dir.create(params$output_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Load data
+
+```{r load_data_human, warning=FALSE, message=FALSE}
+x = readRDS(file.path(params$data_dir, params$input_file))
+x
+assayNames(x)
+```
+
+# Aggregate EN and IN subtypes
+
+```{r subtypes_and_cell_counts, warning=FALSE, message=FALSE}
+# --- subtypes per major class ---
+celltype_groups = list(
+  EN = grep("^EN_", assayNames(x), value = TRUE),
+  IN = grep("^IN_", assayNames(x), value = TRUE)
+)
+celltype_groups
+
+# --- cells per donor x celltype (aligned by name; absent celltype -> 0) ---
+n_cells_mat = t(vapply(int_colData(x)$n_cells, function(v) {
+  out = setNames(numeric(length(assayNames(x))), assayNames(x))
+  common = intersect(names(v), assayNames(x))
+  out[common] = v[common]
+  out
+}, numeric(length(assayNames(x)))))
+rownames(n_cells_mat) = colnames(x)
+stopifnot(nrow(n_cells_mat) == ncol(x), sum(n_cells_mat) > 0)
+```
+
+```{r donor_metadata, warning=FALSE, message=FALSE}
+# --- donor metadata to keep (the original has 940 columns, mostly PRS/QC) ---
+meta_cols = c("SubID", "Age", "scaled_age", "group", "Sex", "Ethnicity", "PMI", "pH",
+              "Brain_bank", "Source", "pool", "prep", "Dx", "Control",
+              "buildblock_controls_supercontrols_for_aging")
+missing_cols = setdiff(meta_cols, colnames(colData(x)))
+if (length(missing_cols) > 0) warning("columns not found: ", paste(missing_cols, collapse = ", "))
+donor_meta = as.data.frame(colData(x))[, intersect(meta_cols, colnames(colData(x))), drop = FALSE]
+
+# same names as in the original human pipeline, so 02/03 code can be reused
+donor_meta$Individual_ID = colnames(x)
+donor_meta$Sample_Source = donor_meta$Brain_bank
+```
+
+```{r build_sce, warning=FALSE, message=FALSE}
+#' Build one SingleCellExperiment for a major celltype by summing its subtype pseudobulks
+build_celltype_sce = function(x, celltype, subtypes, donor_meta, n_cells_mat) {
+  counts = Reduce(`+`, lapply(subtypes, function(a) assay(x, a, withDimnames = TRUE)))
+
+  meta = donor_meta
+  meta$Celltype = celltype
+  meta$n_cells = rowSums(n_cells_mat[, subtypes, drop = FALSE])
+  meta$n_subtypes_present = rowSums(n_cells_mat[, subtypes, drop = FALSE] > 0)
+  meta$lib_size = colSums(counts)
+
+  sce = SingleCellExperiment(
+    assays = list(counts = counts),
+    colData = S4Vectors::DataFrame(meta, check.names = FALSE),
+    rowData = rowData(x)[, intersect(c("gene_id", "gene_name"), colnames(rowData(x))), drop = FALSE],
+    metadata = list(source_object = params$input_file,
+                    summed_subtypes = subtypes,
+                    agg_pars = metadata(x)$agg_pars)
+  )
+
+  # drop donors without any cells of this celltype, and genes with zero counts in all donors
+  sce = sce[, sce$n_cells > 0 & sce$lib_size > 0]
+  sce = sce[rowSums(counts(sce)) > 0, ]
+
+  # sanity check: summed counts equal the sum over subtypes (for the donors kept)
+  stopifnot(isTRUE(all.equal(
+    sum(counts(sce)),
+    sum(sapply(subtypes, function(a) sum(assay(x, a)[rownames(sce), colnames(sce)])))
+  )))
+  sce
+}
+
+sce_EN = build_celltype_sce(x, "EN", celltype_groups$EN, donor_meta, n_cells_mat)
+sce_IN = build_celltype_sce(x, "IN", celltype_groups$IN, donor_meta, n_cells_mat)
+
+c(EN_donors = ncol(sce_EN), IN_donors = ncol(sce_IN))
+summary(sce_EN$n_cells); summary(sce_IN$n_cells)
+table(sce_EN$group)
+```
+
+# Cells per donor
+
+```{r plot_cells_per_donor, warning=FALSE, message=FALSE, fig.height=5, fig.width=9}
+df_cells = rbind(
+  data.frame(donor = colnames(sce_EN), Age = sce_EN$Age, celltype = "EN", n_cells = sce_EN$n_cells),
+  data.frame(donor = colnames(sce_IN), Age = sce_IN$Age, celltype = "IN", n_cells = sce_IN$n_cells)
+)
+
+# distribution, with the filtering threshold
+ggplot(df_cells, aes(x = n_cells, fill = celltype)) +
+  geom_histogram(bins = 40, alpha = 0.7) +
+  geom_vline(xintercept = params$min_cells_per_donor, linetype = "dashed") +
+  scale_x_log10() +
+  facet_wrap(~ celltype, ncol = 1) +
+  labs(x = "Number of cells per donor (log10)", y = "Donors",
+       title = "Distribution of cells per donor (dashed: filtering threshold)") +
+  theme_bw() + theme(legend.position = "none")
+
+# cells per donor vs age
+ggplot(df_cells, aes(x = Age, y = n_cells, colour = celltype)) +
+  geom_point(alpha = 0.7) +
+  geom_hline(yintercept = params$min_cells_per_donor, linetype = "dashed") +
+  scale_y_log10() +
+  labs(x = "Age (years)", y = "Number of cells (log10)", colour = NULL, title = "Cells per donor vs age") +
+  theme_bw()
+```
+
+# Filtering
+
+```{r filter_sce, warning=FALSE, message=FALSE}
+#' Filter donors by cell number and remove LINC genes
+filter_sce = function(sce, min_cells) {
+  n_before = ncol(sce); g_before = nrow(sce)
+
+  # donors with more than `min_cells` cells of this celltype
+  sce = sce[, sce$n_cells > min_cells]
+
+  # remove all LINC (long intergenic non-coding) genes, as in the original human pipeline
+  linc = grepl("LINC", rownames(sce), ignore.case = TRUE)
+  sce = sce[!linc, ]
+
+  # genes that became all-zero after dropping donors
+  sce = sce[rowSums(counts(sce)) > 0, ]
+
+  message(sprintf("%s: donors %d -> %d | genes %d -> %d (%d LINC removed)",
+                  unique(sce$Celltype), n_before, ncol(sce), g_before, nrow(sce), sum(linc)))
+  sce
+}
+
+sce_EN = filter_sce(sce_EN, min_cells = params$min_cells_per_donor)
+sce_IN = filter_sce(sce_IN, min_cells = params$min_cells_per_donor)
+
+# checks
+stopifnot(min(sce_EN$n_cells) > params$min_cells_per_donor,
+          min(sce_IN$n_cells) > params$min_cells_per_donor,
+          !any(grepl("LINC", c(rownames(sce_EN), rownames(sce_IN)), ignore.case = TRUE)))
+c(EN_donors = ncol(sce_EN), IN_donors = ncol(sce_IN))
+summary(sce_EN$Age); summary(sce_IN$Age)
+```
+
+# Save
+
+```{r save_sce, warning=FALSE, message=FALSE}
+saveRDS(sce_EN, file.path(params$output_dir, "pseudobulk_sce_EN_human_extended.RDS"))
+saveRDS(sce_IN, file.path(params$output_dir, "pseudobulk_sce_IN_human_extended.RDS"))
+```
+
+# sessioninfo
+
+```{r sessioninfo}
+sessionInfo()
+```

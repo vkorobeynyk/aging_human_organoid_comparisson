@@ -1,0 +1,342 @@
+---
+title: "ICE Annina 10x sequencing analysis - Cross-cohort age prediction (original vs extended human data)"
+author: "Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH"
+date: last-modified
+format:
+  html:
+    toc: true
+    css: swt.css
+    linkcolor: '#E5005C'
+    df-print: kable
+    embed-resources: true
+    fig-format: png   # default "retina" doubles figure resolution and file size
+    fig-dpi: 96
+    code-fold: true
+    code-block-bg: '#E6EEF0'
+    code-block-border-left: '#3F698A'
+params:
+  original_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_analysis_output"
+  extended_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output"
+  output_dir: "/home/vkorob/data/aging_human_organoid_comparisson/Human_analysis/human_extended_analysis_output/cross_cohort_output"
+  helper_functions_path: "/home/vkorob/data/aging_human_organoid_comparisson/helper_functions.R"
+  original_representation: "pseudobulk"   # "pseudobulk" (summed per patient, like-for-like) or "metacell"
+  min_age: 30
+  max_age: 80
+  restrict_test_to_train_age_range: true
+  min_gene_count: 10
+  min_fraction_samples_expressing: 0.05
+---
+
+::: callout-note
+**What this script does:** tests whether a glmnet age model trained on one human cohort
+generalizes to the other: the original human cohort used throughout the project
+([Nature Genetics 2024](https://www.nature.com/articles/s41588-024-02050-9)) and the
+extended DLPFC lifespan cohort ([Synapse syn52396927](https://www.synapse.org/Synapse:syn52396927)).
+For IN and EN separately, a gaussian lasso age model is trained on all donors of one
+cohort and used to predict the age of every donor of the other cohort, in both
+directions. Performance is compared with the within-cohort cross-validation error of the
+same model, which is what the model achieves on unseen donors *from its own cohort*.
+
+* **Like-for-like samples.** With `original_representation: "pseudobulk"`, the original
+  cohort's filtered single cells (`singlecell_sce_*_human.RDS` from `01_human_Processing.qmd`)
+  are summed per patient, so both cohorts are donor-level pseudobulks. Otherwise the
+  original metacells are used, and a drop in performance could come from the different
+  sample type rather than from the donors.
+
+* **Scaling.** As in the human/organoid notebooks, expression is z-scored per gene
+  within each cohort, on the genes shared by both.
+
+* **Age range.** With `restrict_test_to_train_age_range: true`, test donors outside the
+  age range of the training cohort are dropped: a linear model cannot be expected to
+  extrapolate (e.g. an adult-trained model to children).
+:::
+
+::: callout-important
+A cross-cohort drop in performance means the age signature does not transfer between
+the two datasets. That can reflect donor heterogeneity, but also differences in tissue
+dissection, protocol, sequencing and processing between the studies. These are not
+separable here, so the result should be phrased as "does not transfer between cohorts"
+rather than attributed to biological heterogeneity alone.
+:::
+
+# Setup
+
+```{r setup, warning=FALSE, message=FALSE}
+suppressMessages({
+  library(scater)
+  library(SingleCellExperiment)
+  library(Matrix)
+  library(dplyr)
+  library(ggplot2)
+  library(ggpubr)
+  library(glmnet)
+  library(caret)
+  library(DT)
+})
+source(params$helper_functions_path)
+dir.create(params$output_dir, recursive = TRUE, showWarnings = FALSE)
+set.seed(1)
+```
+
+# Load data
+
+```{r load-functions, warning=FALSE, message=FALSE}
+#' Original cohort: either summed per patient (pseudobulk) or the metacells as used before
+load_original_cohort = function(celltype, representation) {
+  if (representation == "pseudobulk") {
+    sc = readRDS(file.path(params$original_dir, paste0("singlecell_sce_", celltype, "_human.RDS")))
+    patient = factor(sc$Individual_ID)
+    design = Matrix::sparse.model.matrix(~ 0 + patient)
+    colnames(design) = levels(patient)
+    counts_pb = counts(sc) %*% design                   # genes x patients, summed counts
+
+    meta = as.data.frame(colData(sc))
+    meta = meta[!duplicated(meta$Individual_ID), c("Individual_ID", "Age", "Sex", "Diagnosis", "Sample_Source")]
+    rownames(meta) = meta$Individual_ID
+    meta = meta[colnames(counts_pb), ]
+    meta$n_cells = as.vector(table(patient)[colnames(counts_pb)])
+
+    sce = SingleCellExperiment(assays = list(counts = counts_pb), colData = S4Vectors::DataFrame(meta))
+    sce = logNormCounts(sce)
+  } else if (representation == "metacell") {
+    sce = readRDS(file.path(params$original_dir, paste0("metacell_sce_", celltype, "_human.RDS")))
+  } else {
+    stop("original_representation must be 'pseudobulk' or 'metacell'")
+  }
+  sce$Age = as.numeric(sce$Age)
+  sce$cohort = "original"
+  sce$batch_covariate = factor(sce$Sample_Source)
+  sce[rowSums(counts(sce)) > 0, ]
+}
+
+#' Extended cohort: donor-level pseudobulks, same age filter as the other extended notebooks
+load_extended_cohort = function(celltype, min_age, max_age) {
+  sce = readRDS(file.path(params$extended_dir, paste0("pseudobulk_sce_", celltype, "_human_extended.RDS")))
+  sce$Age = as.numeric(sce$Age)
+  sce = sce[, !is.na(sce$Age) & sce$Age >= min_age & sce$Age < max_age]
+  sce = sce[rowSums(counts(sce)) > 0, ]
+  sce = logNormCounts(sce)
+  sce$cohort = "extended"
+  sce$batch_covariate = factor(sce$Brain_bank)
+  sce
+}
+```
+
+```{r load-data, warning=FALSE, message=FALSE}
+cohorts = list(
+  IN = list(original = load_original_cohort("IN", params$original_representation),
+            extended = load_extended_cohort("IN", params$min_age, params$max_age)),
+  EN = list(original = load_original_cohort("EN", params$original_representation),
+            extended = load_extended_cohort("EN", params$min_age, params$max_age))
+)
+
+# samples, donors and age range per cohort
+do.call(rbind, lapply(names(cohorts), function(ct) {
+  do.call(rbind, lapply(names(cohorts[[ct]]), function(co) {
+    sce = cohorts[[ct]][[co]]
+    data.frame(celltype = ct, cohort = co, samples = ncol(sce),
+               donors = length(unique(sce$Individual_ID)),
+               min_age = min(sce$Age), median_age = median(sce$Age), max_age = max(sce$Age),
+               genes = nrow(sce))
+  }))
+}))
+```
+
+## Age distributions
+
+```{r age-distributions, warning=FALSE, message=FALSE, fig.height=4, fig.width=9}
+age_df = do.call(rbind, lapply(names(cohorts), function(ct) {
+  do.call(rbind, lapply(names(cohorts[[ct]]), function(co) {
+    sce = cohorts[[ct]][[co]]
+    d = unique(data.frame(Individual_ID = sce$Individual_ID, Age = sce$Age))
+    data.frame(celltype = ct, cohort = co, Age = d$Age)
+  }))
+}))
+
+ggplot(age_df, aes(x = Age, fill = cohort)) +
+  geom_histogram(bins = 40, alpha = 0.6, position = "identity") +
+  facet_wrap(~ celltype) +
+  labs(x = "Age (years)", y = "Donors", fill = "Cohort") +
+  theme_bw()
+```
+
+# Helper functions
+
+```{r helper-functions, warning=FALSE, message=FALSE}
+#' Keep genes with >= min_count counts in at least min_fraction of samples
+filter_genes_min_expression = function(sce, min_count = params$min_gene_count,
+                                       min_fraction = params$min_fraction_samples_expressing) {
+  keep = rowSums(counts(sce) >= min_count) >= (min_fraction * ncol(sce))
+  sce[keep, ]
+}
+
+#' Performance metrics of predicted vs true age
+prediction_metrics = function(pred, truth) {
+  data.frame(
+    n = length(truth),
+    pearson_r = cor(pred, truth, method = "pearson"),
+    spearman_rho = cor(pred, truth, method = "spearman"),
+    R2 = 1 - sum((truth - pred)^2) / sum((truth - mean(truth))^2),
+    MAE = mean(abs(truth - pred)),
+    RMSE = sqrt(mean((truth - pred)^2))
+  )
+}
+
+#' Train a gaussian age model on all samples of one cohort, predict every sample of the other
+cross_cohort_predict = function(train_sce, test_sce, celltype) {
+  train_name = unique(train_sce$cohort); test_name = unique(test_sce$cohort)
+
+  if (params$restrict_test_to_train_age_range) {
+    test_sce = test_sce[, test_sce$Age >= min(train_sce$Age) & test_sce$Age <= max(train_sce$Age)]
+  }
+
+  # gene filter on the training cohort, then restrict both to shared genes
+  train_sce = filter_genes_min_expression(train_sce)
+  common_genes = intersect(rownames(train_sce), rownames(test_sce))
+  train_sce = train_sce[common_genes, ]
+  test_sce = test_sce[common_genes, ]
+
+  # z-score per gene within each cohort; genes constant in the test cohort -> 0
+  scaled_train = scale(t(as.matrix(logcounts(train_sce))))
+  scaled_test = scale(t(as.matrix(logcounts(test_sce))))
+  scaled_test[is.na(scaled_test)] = 0
+  keep = colSums(is.na(scaled_train)) == 0
+  scaled_train = scaled_train[, keep]; scaled_test = scaled_test[, keep]
+
+  data = as.data.frame(scaled_train)
+  data$label = train_sce$Age
+  out = train_glmnet_model(df = data, model_family = "gaussian", n_times = 1, test = FALSE)
+
+  preds = predict(out$cvfit, newx = scaled_test, s = "lambda.min", type = "response")[, 1]
+
+  # within-cohort reference: CV error of the same model on the training cohort
+  idx = out$cvfit$index["min", ]
+  within_RMSE = sqrt(out$cvfit$cvm[idx])
+  # metacells: average predictions per donor so every donor counts once
+  # explicit dplyr:: so a masking summarise() (e.g. from plyr, if loaded in the session)
+  # cannot silently drop the grouping columns
+  pred_df = data.frame(Individual_ID = test_sce$Individual_ID, Age = test_sce$Age,
+                       batch_covariate = test_sce$batch_covariate, pred = preds) %>%
+    dplyr::group_by(Individual_ID, Age, batch_covariate) %>%
+    dplyr::summarise(pred = mean(pred), .groups = "drop") %>%
+    as.data.frame()
+  stopifnot(all(c("Age", "pred") %in% colnames(pred_df)), nrow(pred_df) > 2)
+
+  metrics = prediction_metrics(pred_df$pred, pred_df$Age)
+  metrics = cbind(data.frame(celltype = celltype, train = train_name, test = test_name,
+                             genes_used = ncol(scaled_train),
+                             genes_selected = sum(coef(out$cvfit, s = "lambda.min")[-1] != 0),
+                             within_cohort_CV_RMSE = within_RMSE),
+                  metrics)
+
+  p = ggplot(pred_df, aes(x = Age, y = pred)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "gray50") +
+    geom_point(aes(color = batch_covariate), alpha = 0.7) +
+    geom_smooth(method = "lm", color = "black", linetype = "dashed") +
+    labs(x = "True Age", y = "Predicted Age", color = "Sample source / brain bank",
+         title = paste0(celltype, ": train ", train_name, " -> test ", test_name),
+         subtitle = sprintf("r = %.2f | R² = %.2f | MAE = %.1f y | RMSE = %.1f y (within-cohort CV RMSE = %.1f y)",
+                            metrics$pearson_r, metrics$R2, metrics$MAE, metrics$RMSE, within_RMSE)) +
+    theme_bw()
+  print(p)
+
+  coefs = as.matrix(coef(out$cvfit, s = "lambda.min"))
+  coefs = data.frame(gene = rownames(coefs), coef = coefs[, 1])
+  coefs = coefs[coefs$gene != "(Intercept)" & coefs$coef != 0, ]
+  write.table(coefs, file.path(params$output_dir,
+              paste0("coefs_glmnet_", celltype, "_train_", train_name, ".txt")), row.names = FALSE)
+
+  list(metrics = metrics, predictions = pred_df, coefs = coefs)
+}
+```
+
+# Cross-cohort predictions
+
+::: panel-tabset
+## IN: original -> extended
+
+```{r IN_orig_to_ext, warning=FALSE, message=FALSE, fig.height=6, fig.width=8}
+res_IN_o2e = cross_cohort_predict(cohorts$IN$original, cohorts$IN$extended, "IN")
+```
+
+## IN: extended -> original
+
+```{r IN_ext_to_orig, warning=FALSE, message=FALSE, fig.height=6, fig.width=8}
+res_IN_e2o = cross_cohort_predict(cohorts$IN$extended, cohorts$IN$original, "IN")
+```
+
+## EN: original -> extended
+
+```{r EN_orig_to_ext, warning=FALSE, message=FALSE, fig.height=6, fig.width=8}
+res_EN_o2e = cross_cohort_predict(cohorts$EN$original, cohorts$EN$extended, "EN")
+```
+
+## EN: extended -> original
+
+```{r EN_ext_to_orig, warning=FALSE, message=FALSE, fig.height=6, fig.width=8}
+res_EN_e2o = cross_cohort_predict(cohorts$EN$extended, cohorts$EN$original, "EN")
+```
+:::
+
+# Summary
+
+```{r summary, warning=FALSE, message=FALSE, fig.height=5, fig.width=9}
+all_results = list(res_IN_o2e, res_IN_e2o, res_EN_o2e, res_EN_e2o)
+
+summary_df = do.call(rbind, lapply(all_results, `[[`, "metrics"))
+summary_df$direction = paste0(summary_df$train, " -> ", summary_df$test)
+write.table(summary_df, file.path(params$output_dir, "cross_cohort_prediction_summary.txt"), row.names = FALSE)
+
+summary_df %>%
+  mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
+  datatable()
+
+# cross-cohort RMSE vs the same model's within-cohort CV RMSE
+rmse_df = rbind(
+  data.frame(celltype = summary_df$celltype, direction = summary_df$direction,
+             type = "within training cohort (CV)", RMSE = summary_df$within_cohort_CV_RMSE),
+  data.frame(celltype = summary_df$celltype, direction = summary_df$direction,
+             type = "other cohort", RMSE = summary_df$RMSE)
+)
+
+ggplot(rmse_df, aes(x = direction, y = RMSE, fill = type)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ celltype) +
+  labs(x = "Training -> test cohort", y = "RMSE (years)", fill = NULL,
+       title = "Age prediction error: own cohort vs other cohort") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1), legend.position = "bottom")
+```
+
+## Overlap of selected genes
+
+```{r gene-overlap, warning=FALSE, message=FALSE}
+#' Overlap of genes selected by the original- and extended-trained models, with a
+#' hypergeometric test against the genes shared by both cohorts
+gene_overlap = function(res_orig_trained, res_ext_trained, celltype) {
+  g_orig = res_orig_trained$coefs$gene
+  g_ext = res_ext_trained$coefs$gene
+  universe = intersect(rownames(cohorts[[celltype]]$original), rownames(cohorts[[celltype]]$extended))
+  shared = intersect(g_orig, g_ext)
+  same_sign = sum(sign(res_orig_trained$coefs$coef[match(shared, g_orig)]) ==
+                  sign(res_ext_trained$coefs$coef[match(shared, g_ext)]))
+  data.frame(
+    celltype = celltype,
+    genes_original_model = length(g_orig),
+    genes_extended_model = length(g_ext),
+    shared = length(shared),
+    shared_same_direction = same_sign,
+    hypergeom_p = phyper(length(shared) - 1, length(g_orig), length(universe) - length(g_orig),
+                         length(g_ext), lower.tail = FALSE)
+  )
+}
+
+rbind(gene_overlap(res_IN_o2e, res_IN_e2o, "IN"),
+      gene_overlap(res_EN_o2e, res_EN_e2o, "EN"))
+```
+
+# sessioninfo
+
+```{r sessioninfo}
+sessionInfo()
+```

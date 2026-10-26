@@ -294,5 +294,8 @@ combined_wide %>%
 # sessioninfo
 
 ```{r load_data}
+cat("renv project:", if (is.null(renv::project())) "renv NOT active" else renv::project(), "\n")
+.libPaths()
+
 sessionInfo()
 ```

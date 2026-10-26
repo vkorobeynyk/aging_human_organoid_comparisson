@@ -149,7 +149,7 @@ for (dataset in dataset_path) {
   SO = SO_lst[[dataset]]
   
   set.seed(1)
-  SO = SCTransform(SO, verbose = FALSE)
+  SO = SCTransform(SO, vst.flavor = "v2", method = "nb_offset", verbose = FALSE)
   SO = RunPCA(SO, features = VariableFeatures(object = SO)) 
   SO = FindNeighbors(SO, dims = 1:20)
   SO = FindClusters(SO, resolution = 1)
@@ -337,8 +337,7 @@ DotPlot(
     legend.text = element_text(size = 10)
   )
 
-celltype_annotations
-DimPlot(harmonized_seurat, reduction = "umap", group.by = "Celltype")
+celltype_annotations = DimPlot(harmonized_seurat, reduction = "umap", group.by = "Celltype")
 ```
 
 ## Remove stressed cells cluster
@@ -592,5 +591,8 @@ for (plot_name in names(publication_plots)) {
 # sessioninfo
 
 ```{r}
+cat("renv project:", if (is.null(renv::project())) "renv NOT active" else renv::project(), "\n")
+.libPaths()
+
 sessionInfo()
 ```
