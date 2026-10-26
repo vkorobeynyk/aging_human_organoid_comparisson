@@ -259,7 +259,7 @@ metacell_DESeq2_DEA = function(sce, phenotype_column, dataset_column, design_for
               heatmap = heatmap))
 }
 
-
+requireNamespace("org.Hs.eg.db", quietly = TRUE)   # used by rrvgo via orgdb = "org.Hs.eg.db"
 reduceGOredundancy = function(gsea_output, threshold = 0.7)
 {
   simMatrix = calculateSimMatrix(gsea_output$hsapiens_BP_ID,
