@@ -13,3 +13,6 @@ compare_organoid_human/job_comparison_2datasets
 *.[rR][dD][sS]
 Organoid_analysis/01_organoid_QC_processing_integration_files/
 Human_analysis/human_extended_analysis_output/
+Human_analysis/04_human_ML_predictions_human_testOrganoids_files/
+Human_analysis/04_human_extended_ML_predictions_human_testOrganoids_files/
+

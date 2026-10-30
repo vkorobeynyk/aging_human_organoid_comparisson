@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 <meta name="author" content="Vladyslav Korobeynyk at Jessberger/Robinsonlab, UZH">
-<meta name="dcterms.date" content="2026-10-14">
+<meta name="dcterms.date" content="2026-10-26">
 
 <title>ICE Annina 10x sequencing analysis - Analysis of extended human data (pseudobulk)</title>
 <style>
@@ -3112,7 +3112,7 @@ vertical-align: -.125em;
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">October 14, 2026</p>
+      <p class="date">October 26, 2026</p>
     </div>
   </div>
   
@@ -3329,7 +3329,7 @@ Important
 </details>
 <div class="cell-output cell-output-stdout">
 <pre><code>~Sex + Ethnicity + Brain_bank + Control + log_n_cells + Age
-&lt;environment: 0x5862904998c8&gt;</code></pre>
+&lt;environment: 0x5f9d83507208&gt;</code></pre>
 </div>
 <details class="code-fold">
 <summary>Code</summary>
@@ -3657,9 +3657,6 @@ $Control
 <span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stderr">
-<pre><code></code></pre>
-</div>
-<div class="cell-output cell-output-stderr">
 <pre><code>preparing gene to GO mapping data...</code></pre>
 </div>
 <div class="cell-output cell-output-stderr">
@@ -3704,15 +3701,15 @@ $Control
 <div class="cell">
 <details class="code-fold">
 <summary>Code</summary>
-<div class="sourceCode cell-code" id="cb27"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a>gsea_EN <span class="ot">=</span> <span class="fu">run_gsea_workflow</span>(</span>
-<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">markers_csv_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>dea_output_dir, <span class="st">&quot;DEA_pseudobulk_exN_age_human_extended.csv&quot;</span>),</span>
-<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">gs =</span> gs,</span>
-<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_pathways =</span> params<span class="sc">$</span>n_gsea_pathways,</span>
-<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">title_label =</span> <span class="st">&quot;human extended pseudobulk EN across age&quot;</span>,</span>
-<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsea_rds_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_exN_all_human_extended.RDS&quot;</span>),</span>
-<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">neg_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_exN_downregulated_old_human_extended.txt&quot;</span>),</span>
-<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">pos_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_exN_upregulated_old_human_extended.txt&quot;</span>)</span>
-<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb26"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a>gsea_EN <span class="ot">=</span> <span class="fu">run_gsea_workflow</span>(</span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">markers_csv_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>dea_output_dir, <span class="st">&quot;DEA_pseudobulk_exN_age_human_extended.csv&quot;</span>),</span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">gs =</span> gs,</span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_pathways =</span> params<span class="sc">$</span>n_gsea_pathways,</span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">title_label =</span> <span class="st">&quot;human extended pseudobulk EN across age&quot;</span>,</span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsea_rds_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_exN_all_human_extended.RDS&quot;</span>),</span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">neg_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_exN_downregulated_old_human_extended.txt&quot;</span>),</span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">pos_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_exN_upregulated_old_human_extended.txt&quot;</span>)</span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stderr">
 <pre><code>preparing gene to GO mapping data...</code></pre>
@@ -3759,15 +3756,15 @@ $Control
 <div class="cell">
 <details class="code-fold">
 <summary>Code</summary>
-<div class="sourceCode cell-code" id="cb34"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a>gsea_merged <span class="ot">=</span> <span class="fu">run_gsea_workflow</span>(</span>
-<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">markers_csv_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>dea_output_dir, <span class="st">&quot;DEA_pseudobulk_neurons_age_human_extended.csv&quot;</span>),</span>
-<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">gs =</span> gs,</span>
-<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_pathways =</span> params<span class="sc">$</span>n_gsea_pathways,</span>
-<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">title_label =</span> <span class="st">&quot;human extended pseudobulk IN|EN across age&quot;</span>,</span>
-<span id="cb34-6"><a href="#cb34-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsea_rds_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_neurons_all_human_extended.RDS&quot;</span>),</span>
-<span id="cb34-7"><a href="#cb34-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">neg_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_neurons_downregulated_old_human_extended.txt&quot;</span>),</span>
-<span id="cb34-8"><a href="#cb34-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">pos_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_neurons_upregulated_old_human_extended.txt&quot;</span>)</span>
-<span id="cb34-9"><a href="#cb34-9" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb33"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a>gsea_merged <span class="ot">=</span> <span class="fu">run_gsea_workflow</span>(</span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">markers_csv_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>dea_output_dir, <span class="st">&quot;DEA_pseudobulk_neurons_age_human_extended.csv&quot;</span>),</span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">gs =</span> gs,</span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">n_pathways =</span> params<span class="sc">$</span>n_gsea_pathways,</span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">title_label =</span> <span class="st">&quot;human extended pseudobulk IN|EN across age&quot;</span>,</span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">gsea_rds_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_neurons_all_human_extended.RDS&quot;</span>),</span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">neg_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_neurons_downregulated_old_human_extended.txt&quot;</span>),</span>
+<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">pos_txt_path =</span> <span class="fu">file.path</span>(params<span class="sc">$</span>gsea_output_dir, <span class="st">&quot;GOterms_pseudobulk_age_neurons_upregulated_old_human_extended.txt&quot;</span>)</span>
+<span id="cb33-9"><a href="#cb33-9" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stderr">
 <pre><code>no term enriched under specific pvalueCutoff...</code></pre>
@@ -3782,7 +3779,7 @@ $Control
 <div class="cell">
 <details class="code-fold">
 <summary>Code</summary>
-<div class="sourceCode cell-code" id="cb36"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sessionInfo</span>()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code" id="cb35"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sessionInfo</span>()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stdout">
 <pre><code>R version 4.3.3 (2024-02-29)
